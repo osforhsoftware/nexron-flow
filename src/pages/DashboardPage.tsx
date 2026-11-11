@@ -1,39 +1,152 @@
 import { Link } from "react-router-dom";
-import { BanknoteArrowDown, BanknoteArrowUp, FilePlus2, Plus, ShoppingBag } from "lucide-react";
+import {
+  AlertTriangle,
+  BanknoteArrowDown,
+  BanknoteArrowUp,
+  BarChart3,
+  ClipboardList,
+  FilePlus2,
+  FileText,
+  Package,
+  PackageCheck,
+  Plus,
+  ShoppingBag,
+  Truck,
+  Users,
+  Wallet,
+  Wrench,
+} from "lucide-react";
 import { api } from "../lib/api";
 import { useApp } from "../lib/AppContext";
 import { money } from "../lib/format";
-import { partyBalances, salesSummary } from "../lib/reports";
+import { partyBalances, profitAndLossLite, salesSummary } from "../lib/reports";
 import { useAsync } from "../lib/useAsync";
+import { TablePagination, usePagedRows } from "../components/TablePagination";
+
+const LOW_STOCK_QTY = 5;
 
 export function DashboardPage() {
   const { company, canAccess } = useApp();
   const companyId = company?.id;
   const fmtMoney = (n: number) => money(n, company?.currency);
+  const allowSales = canAccess("sales");
+  const allowPurchases = canAccess("purchases");
+  const allowItems = canAccess("items");
 
-  const { data } = useAsync(async () => {
+  const { data, error, loading } = useAsync(async () => {
     if (!companyId) return null;
-    const [summary, parties, itemsRes, txnsRes] = await Promise.all([
+
+    const monthPrefix = new Date().toISOString().slice(0, 7);
+    const emptyDocs = { docs: [] as Awaited<ReturnType<typeof api.docs.list>>["docs"] };
+    const emptyEquip = { equipment: [] as Awaited<ReturnType<typeof api.equipment.list>>["equipment"] };
+    const emptyAccounts = {
+      accounts: [] as Awaited<ReturnType<typeof api.payments.accounts>>["accounts"],
+    };
+    const safe = async <T,>(p: Promise<T>, fallback: T): Promise<T> => {
+      try {
+        return await p;
+      } catch {
+        return fallback;
+      }
+    };
+
+    const [
+      summary,
+      parties,
+      itemsRes,
+      txnsRes,
+      accountsRes,
+      pnl,
+      quotationDocs,
+      saleOrders,
+      deliveries,
+      rfqs,
+      pos,
+      grns,
+      equipmentRes,
+    ] = await Promise.all([
       salesSummary(companyId),
       partyBalances(companyId),
       api.items.list(companyId),
       api.transactions.list(companyId),
+      safe(api.payments.accounts(companyId), emptyAccounts),
+      profitAndLossLite(companyId),
+      allowSales ? safe(api.docs.list(companyId, "quotation"), emptyDocs) : emptyDocs,
+      allowSales ? safe(api.docs.list(companyId, "sale_order"), emptyDocs) : emptyDocs,
+      allowSales ? safe(api.docs.list(companyId, "delivery"), emptyDocs) : emptyDocs,
+      allowPurchases ? safe(api.docs.list(companyId, "rfq"), emptyDocs) : emptyDocs,
+      allowPurchases ? safe(api.docs.list(companyId, "purchase_order"), emptyDocs) : emptyDocs,
+      allowPurchases ? safe(api.docs.list(companyId, "grn"), emptyDocs) : emptyDocs,
+      allowItems ? safe(api.equipment.list(companyId), emptyEquip) : emptyEquip,
     ]);
+
+    const products = itemsRes.items.filter((i) => (i.itemType ?? "product") === "product");
+    const services = itemsRes.items.filter((i) => i.itemType === "service");
+    const openDoc = (status: string) =>
+      !["converted", "declined", "expired"].includes(String(status));
+
+    const monthSales = summary.sales
+      .filter((t) => t.date.startsWith(monthPrefix))
+      .reduce((s, t) => s + t.grandTotal, 0);
+    const monthPurchases = txnsRes.transactions
+      .filter((t) => t.type === "purchase" && t.date.startsWith(monthPrefix))
+      .reduce((s, t) => s + t.grandTotal, 0);
+
+    const partyById = new Map(parties.map((p) => [p.id, p]));
+    const recent = txnsRes.transactions.map((t) => ({
+      ...t,
+      partyName: t.partyId ? partyById.get(t.partyId)?.name : undefined,
+    }));
+
+    const cashBalance = accountsRes.accounts.reduce((s, a) => s + a.openingBalance, 0);
+
     return {
       summary,
+      pnl,
       receivable: parties.filter((p) => p.computed > 0).reduce((s, p) => s + p.computed, 0),
       payable: parties.filter((p) => p.computed < 0).reduce((s, p) => s + Math.abs(p.computed), 0),
-      stockValue: itemsRes.items.reduce((s, i) => s + i.stockQty * i.purchasePrice, 0),
-      recent: txnsRes.transactions.slice(0, 8),
+      stockValue: products.reduce((s, i) => s + i.stockQty * i.purchasePrice, 0),
+      itemCount: itemsRes.items.length,
+      productCount: products.length,
+      serviceCount: services.length,
+      partyCount: parties.length,
+      equipmentCount: equipmentRes.equipment.length,
+      lowStock: products
+        .filter((i) => i.stockQty <= LOW_STOCK_QTY)
+        .sort((a, b) => a.stockQty - b.stockQty),
+      topRecv: parties
+        .filter((p) => p.computed > 0)
+        .sort((a, b) => b.computed - a.computed),
+      topPay: parties
+        .filter((p) => p.computed < 0)
+        .sort((a, b) => a.computed - b.computed),
+      recent,
+      accounts: accountsRes.accounts,
+      cashBalance,
+      monthSales,
+      monthPurchases,
+      pipeline: {
+        quotations: quotationDocs.docs.filter((d) => openDoc(String(d.status))).length,
+        saleOrders: saleOrders.docs.filter((d) => openDoc(String(d.status))).length,
+        deliveries: deliveries.docs.filter((d) => openDoc(String(d.status))).length,
+        rfqs: rfqs.docs.filter((d) => openDoc(String(d.status))).length,
+        pos: pos.docs.filter((d) => openDoc(String(d.status))).length,
+        grns: grns.docs.filter((d) => openDoc(String(d.status))).length,
+      },
     };
   }, [companyId]);
+
+  const recvPage = usePagedRows(data?.topRecv, companyId ?? "");
+  const payPage = usePagedRows(data?.topPay, `${companyId ?? ""}|pay`);
+  const stockPage = usePagedRows(data?.lowStock, `${companyId ?? ""}|stock`);
+  const recentPage = usePagedRows(data?.recent, `${companyId ?? ""}|recent`);
 
   return (
     <>
       <header className="topbar">
         <div>
           <h1>Home</h1>
-          <p className="muted">{company?.name} · business dashboard (PHP API)</p>
+          <p className="muted">{company?.name} · business dashboard</p>
         </div>
         <div className="topbar-actions">
           {canAccess("sales") ? (
@@ -42,36 +155,70 @@ export function DashboardPage() {
             </Link>
           ) : null}
           {canAccess("purchases") ? (
-            <Link className="btn btn-secondary" to="/purchases?create=1">
+            <Link className="btn btn-secondary" to="/purchases/bills?create=1">
               <Plus size={14} /> Add Purchase
             </Link>
           ) : null}
         </div>
       </header>
 
-      <div className="content">
-        <div className="quick-action-grid">
+      <div className="content dash-home">
+        {error ? <div className="empty">{error}</div> : null}
+        {loading && !data ? <div className="muted" style={{ padding: "4px 2px" }}>Loading dashboard…</div> : null}
+        <div className="quick-action-grid dash-quick-grid">
           {canAccess("sales") ? (
-            <Link to="/sales?create=1" className="quick-action-card">
-              <FilePlus2 />
-              <span>
-                <strong>Sale Invoice</strong>
-                <small>Create tax invoice</small>
-              </span>
-            </Link>
+            <>
+              <Link to="/sales?create=1" className="quick-action-card">
+                <FilePlus2 />
+                <span>
+                  <strong>Sale Invoice</strong>
+                  <small>Create tax invoice</small>
+                </span>
+              </Link>
+              <Link to="/sales/quotations?create=1" className="quick-action-card violet">
+                <FileText />
+                <span>
+                  <strong>Quotation</strong>
+                  <small>Estimate / quote</small>
+                </span>
+              </Link>
+              <Link to="/sales/orders?create=1" className="quick-action-card teal">
+                <ClipboardList />
+                <span>
+                  <strong>Sale Order</strong>
+                  <small>Confirm customer order</small>
+                </span>
+              </Link>
+              <Link to="/sales/delivery?create=1" className="quick-action-card slate">
+                <Truck />
+                <span>
+                  <strong>Delivery</strong>
+                  <small>Delivery challan</small>
+                </span>
+              </Link>
+            </>
           ) : null}
           {canAccess("purchases") ? (
-            <Link to="/purchases?create=1" className="quick-action-card blue">
-              <ShoppingBag />
-              <span>
-                <strong>Purchase Bill</strong>
-                <small>Record new purchase</small>
-              </span>
-            </Link>
+            <>
+              <Link to="/purchases/bills?create=1" className="quick-action-card blue">
+                <ShoppingBag />
+                <span>
+                  <strong>Purchase Bill</strong>
+                  <small>Record new purchase</small>
+                </span>
+              </Link>
+              <Link to="/purchases/rfq?create=1" className="quick-action-card indigo">
+                <FileText />
+                <span>
+                  <strong>RFQ</strong>
+                  <small>Ask suppliers</small>
+                </span>
+              </Link>
+            </>
           ) : null}
           {canAccess("payments") ? (
             <>
-              <Link to="/payments" className="quick-action-card green">
+              <Link to="/payments?create=1" className="quick-action-card green">
                 <BanknoteArrowDown />
                 <span>
                   <strong>Payment In</strong>
@@ -87,23 +234,312 @@ export function DashboardPage() {
               </Link>
             </>
           ) : null}
+          {canAccess("parties") ? (
+            <Link to="/parties" className="quick-action-card slate">
+              <Users />
+              <span>
+                <strong>Parties</strong>
+                <small>{data?.partyCount ?? 0} contacts</small>
+              </span>
+            </Link>
+          ) : null}
+          {canAccess("items") ? (
+            <Link to="/items/products" className="quick-action-card teal">
+              <Package />
+              <span>
+                <strong>Items</strong>
+                <small>
+                  {data?.productCount ?? 0} products · {data?.serviceCount ?? 0} services
+                </small>
+              </span>
+            </Link>
+          ) : null}
         </div>
-        <div className="stat-row">
+
+        <div className="stat-row dash-stat-row">
           <div className="stat">
             <small>Total Sales</small>
             <strong>{fmtMoney(data?.summary.salesTotal ?? 0)}</strong>
+            <span className="stat-meta">{data?.summary.salesCount ?? 0} invoices</span>
+          </div>
+          <div className="stat">
+            <small>Total Purchase</small>
+            <strong>{fmtMoney(data?.summary.purchaseTotal ?? 0)}</strong>
+            <span className="stat-meta">{data?.summary.purchaseCount ?? 0} bills</span>
           </div>
           <div className="stat">
             <small>To Receive</small>
             <strong className="money recv">{fmtMoney(data?.receivable ?? 0)}</strong>
+            <span className="stat-meta">Party receivables</span>
           </div>
           <div className="stat">
             <small>To Pay</small>
             <strong className="money pay">{fmtMoney(data?.payable ?? 0)}</strong>
+            <span className="stat-meta">Party payables</span>
           </div>
           <div className="stat">
             <small>Stock Value</small>
             <strong>{fmtMoney(data?.stockValue ?? 0)}</strong>
+            <span className="stat-meta">{data?.productCount ?? 0} products</span>
+          </div>
+          <div className="stat">
+            <small>Cash & Bank</small>
+            <strong>{fmtMoney(data?.cashBalance ?? 0)}</strong>
+            <span className="stat-meta">{data?.accounts.length ?? 0} accounts</span>
+          </div>
+          <div className="stat">
+            <small>This Month Sales</small>
+            <strong className="money recv">{fmtMoney(data?.monthSales ?? 0)}</strong>
+            <span className="stat-meta">vs purchases {fmtMoney(data?.monthPurchases ?? 0)}</span>
+          </div>
+          <div className="stat">
+            <small>Gross Profit (lite)</small>
+            <strong className={data && data.pnl.gross >= 0 ? "money recv" : "money pay"}>
+              {fmtMoney(data?.pnl.gross ?? 0)}
+            </strong>
+            <span className="stat-meta">Sales − purchases (ex tax)</span>
+          </div>
+        </div>
+
+        <div className="dash-split">
+          <div className="panel">
+            <div className="panel-head">
+              <h2>Open pipeline</h2>
+              {canAccess("purchases") ? (
+                <Link className="btn btn-ghost" to="/purchases">
+                  Purchase flow
+                </Link>
+              ) : null}
+            </div>
+            <div className="dash-pipeline">
+              {canAccess("sales") ? (
+                <>
+                  <Link to="/sales/quotations" className="dash-pipe-card">
+                    <strong>{data?.pipeline.quotations ?? 0}</strong>
+                    <span>Quotations</span>
+                  </Link>
+                  <Link to="/sales/orders" className="dash-pipe-card">
+                    <strong>{data?.pipeline.saleOrders ?? 0}</strong>
+                    <span>Sale orders</span>
+                  </Link>
+                  <Link to="/sales/delivery" className="dash-pipe-card">
+                    <strong>{data?.pipeline.deliveries ?? 0}</strong>
+                    <span>Deliveries</span>
+                  </Link>
+                </>
+              ) : null}
+              {canAccess("purchases") ? (
+                <>
+                  <Link to="/purchases/rfq" className="dash-pipe-card">
+                    <strong>{data?.pipeline.rfqs ?? 0}</strong>
+                    <span>RFQs</span>
+                  </Link>
+                  <Link to="/purchases/orders" className="dash-pipe-card">
+                    <strong>{data?.pipeline.pos ?? 0}</strong>
+                    <span>POs</span>
+                  </Link>
+                  <Link to="/purchases/grn" className="dash-pipe-card">
+                    <strong>{data?.pipeline.grns ?? 0}</strong>
+                    <span>GRNs</span>
+                  </Link>
+                </>
+              ) : null}
+              {canAccess("items") ? (
+                <Link to="/items/equipment" className="dash-pipe-card">
+                  <strong>{data?.equipmentCount ?? 0}</strong>
+                  <span>Equipment</span>
+                </Link>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-head">
+              <h2>Cash & bank</h2>
+              {canAccess("payments") ? (
+                <Link className="btn btn-ghost" to="/payments">
+                  Open
+                </Link>
+              ) : null}
+            </div>
+            <div className="dash-cash-list">
+              {(data?.accounts ?? []).slice(0, 6).map((a) => (
+                <div key={a.id} className="dash-cash-row">
+                  <span>
+                    <Wallet size={14} /> {a.name}
+                    <small className="muted"> · {a.kind}</small>
+                  </span>
+                  <strong>{fmtMoney(a.openingBalance)}</strong>
+                </div>
+              ))}
+              {!data?.accounts?.length ? (
+                <div className="empty">No cash / bank accounts yet.</div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        <div className="dash-split">
+          <div className="panel">
+            <div className="panel-head">
+              <h2>To receive</h2>
+              {canAccess("parties") ? (
+                <Link className="btn btn-ghost" to="/parties">
+                  Parties
+                </Link>
+              ) : null}
+            </div>
+            <div className="table-wrap">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Party</th>
+                    <th>Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recvPage.pageRows.map((p) => (
+                    <tr key={p.id}>
+                      <td>{p.name}</td>
+                      <td className="money recv">{fmtMoney(p.computed)}</td>
+                    </tr>
+                  ))}
+                  {!data?.topRecv?.length ? (
+                    <tr>
+                      <td colSpan={2}>
+                        <div className="empty">No receivables.</div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+            <TablePagination pager={recvPage} />
+          </div>
+
+          <div className="panel">
+            <div className="panel-head">
+              <h2>To pay</h2>
+              {canAccess("parties") ? (
+                <Link className="btn btn-ghost" to="/parties">
+                  Parties
+                </Link>
+              ) : null}
+            </div>
+            <div className="table-wrap">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Party</th>
+                    <th>Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {payPage.pageRows.map((p) => (
+                    <tr key={p.id}>
+                      <td>{p.name}</td>
+                      <td className="money pay">{fmtMoney(Math.abs(p.computed))}</td>
+                    </tr>
+                  ))}
+                  {!data?.topPay?.length ? (
+                    <tr>
+                      <td colSpan={2}>
+                        <div className="empty">No payables.</div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+            <TablePagination pager={payPage} />
+          </div>
+        </div>
+
+        <div className="dash-split">
+          <div className="panel">
+            <div className="panel-head">
+              <h2>
+                <AlertTriangle size={14} style={{ marginRight: 6, verticalAlign: "-2px" }} />
+                Low stock
+              </h2>
+              {canAccess("items") ? (
+                <Link className="btn btn-ghost" to="/items/products">
+                  Products
+                </Link>
+              ) : null}
+            </div>
+            <div className="table-wrap">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th>Qty</th>
+                    <th>Value</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stockPage.pageRows.map((i) => (
+                    <tr key={i.id}>
+                      <td>{i.name}</td>
+                      <td className={i.stockQty <= 0 ? "money pay" : ""}>
+                        {i.stockQty} {i.unit}
+                      </td>
+                      <td className="money">{fmtMoney(i.stockQty * i.purchasePrice)}</td>
+                    </tr>
+                  ))}
+                  {!data?.lowStock?.length ? (
+                    <tr>
+                      <td colSpan={3}>
+                        <div className="empty">No low-stock products (≤ {LOW_STOCK_QTY}).</div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+            <TablePagination pager={stockPage} />
+          </div>
+
+          <div className="panel">
+            <div className="panel-head">
+              <h2>More tools</h2>
+            </div>
+            <div className="dash-tools">
+              {canAccess("reports") ? (
+                <Link to="/reports" className="dash-tool-link">
+                  <BarChart3 size={16} /> Reports & GST
+                </Link>
+              ) : null}
+              {canAccess("payments") ? (
+                <Link to="/payments" className="dash-tool-link">
+                  <Wallet size={16} /> Cash & Bank
+                </Link>
+              ) : null}
+              {canAccess("items") ? (
+                <Link to="/items/equipment" className="dash-tool-link">
+                  <PackageCheck size={16} /> Equipment register
+                </Link>
+              ) : null}
+              <Link to="/utilities" className="dash-tool-link">
+                <Wrench size={16} /> Utilities
+              </Link>
+              <Link to="/backup" className="dash-tool-link">
+                <FileText size={16} /> Sync & Backup
+              </Link>
+              <Link to="/settings" className="dash-tool-link">
+                <ClipboardList size={16} /> Settings
+              </Link>
+            </div>
+            <div className="dash-money-flow">
+              <div>
+                <small>Payment In</small>
+                <strong className="money recv">{fmtMoney(data?.summary.paymentInTotal ?? 0)}</strong>
+              </div>
+              <div>
+                <small>Payment Out</small>
+                <strong className="money pay">{fmtMoney(data?.summary.paymentOutTotal ?? 0)}</strong>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -123,11 +559,12 @@ export function DashboardPage() {
                   <th>Date</th>
                   <th>Type</th>
                   <th>No.</th>
+                  <th>Party</th>
                   <th>Amount</th>
                 </tr>
               </thead>
               <tbody>
-                {(data?.recent ?? []).map((t) => (
+                {recentPage.pageRows.map((t) => (
                   <tr key={t.id}>
                     <td>{t.date}</td>
                     <td>
@@ -140,12 +577,13 @@ export function DashboardPage() {
                       </span>
                     </td>
                     <td>{t.number}</td>
+                    <td>{t.partyName || "—"}</td>
                     <td className="money">{fmtMoney(t.grandTotal)}</td>
                   </tr>
                 ))}
                 {!data?.recent?.length ? (
                   <tr>
-                    <td colSpan={4}>
+                    <td colSpan={5}>
                       <div className="empty">No transactions yet. Click Add Sale to begin.</div>
                     </td>
                   </tr>
@@ -153,6 +591,7 @@ export function DashboardPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination pager={recentPage} />
         </div>
       </div>
     </>

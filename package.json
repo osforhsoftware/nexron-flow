@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:api": "cd backend && C:\\xampp\\php\\php.exe -S 127.0.0.1:4000 run-api.php",
-    "db:seed": "cd backend && C:\\xampp\\php\\php.exe scripts/setup-mysql.php",
+    "dev:api": "echo Use XAMPP Apache — API is C:\\xampp\\htdocs\\mems-backend (http://127.0.0.1/mems-backend/api/health)",
+    "db:seed": "C:\\xampp\\php\\php.exe C:\\xampp\\htdocs\\mems-backend\\scripts\\seed.php",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview"
@@ -16,13 +16,17 @@
     "dexie": "^4.4.7",
     "dexie-react-hooks": "^4.4.0",
     "framer-motion": "^14.10.1",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.9",
     "lucide-react": "^1.70.0",
+    "qrcode": "^1.5.4",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-router-dom": "^7.18.5"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",

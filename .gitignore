@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Local SQLite leftover; MySQL data stays on the machine
+backend/storage/*.db
+backend.zip
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

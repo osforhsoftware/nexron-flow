@@ -51,6 +51,18 @@ final class Api
             }
         }
 
+        if ($method === 'GET' && $path === '/api/party-types') {
+            $this->listPartyTypes();
+        }
+        if ($method === 'POST' && $path === '/api/party-types') {
+            $this->createPartyType();
+        }
+        if (preg_match('#^/api/party-types/([^/]+)$#', $path, $m)) {
+            if ($method === 'DELETE') {
+                $this->deletePartyType($m[1]);
+            }
+        }
+
         if ($method === 'GET' && $path === '/api/parties') {
             $this->listParties();
         }
@@ -64,6 +76,16 @@ final class Api
             if ($method === 'DELETE') {
                 $this->deleteParty($m[1]);
             }
+        }
+
+        if ($method === 'GET' && $path === '/api/item-categories') {
+            $this->listItemCategories();
+        }
+        if ($method === 'POST' && $path === '/api/item-categories') {
+            $this->createItemCategory();
+        }
+        if (preg_match('#^/api/item-categories/([^/]+)$#', $path, $m) && $method === 'DELETE') {
+            $this->deleteItemCategory($m[1]);
         }
 
         if ($method === 'GET' && $path === '/api/items') {
@@ -81,6 +103,30 @@ final class Api
             }
         }
 
+        if ($method === 'GET' && $path === '/api/equipment') {
+            $this->listEquipment();
+        }
+        if ($method === 'POST' && $path === '/api/equipment') {
+            $this->createEquipment();
+        }
+        if (preg_match('#^/api/equipment/([^/]+)$#', $path, $m) && $method === 'PATCH') {
+            $this->updateEquipment($m[1]);
+        }
+        if ($method === 'PATCH' && $path === '/api/equipment') {
+            $id = (string) ($_GET['id'] ?? '');
+            if ($id === '') {
+                Response::error('id required', 400);
+            }
+            $this->updateEquipment($id);
+        }
+
+        if ($method === 'GET' && preg_match('#^/api/scan/product/([^/]+)$#', $path, $m)) {
+            $this->scanProduct($m[1]);
+        }
+        if ($method === 'GET' && preg_match('#^/api/scan/equipment/([^/]+)$#', $path, $m)) {
+            $this->scanEquipment($m[1]);
+        }
+
         if ($method === 'GET' && $path === '/api/payments/accounts') {
             $this->listAccounts();
         }
@@ -96,6 +142,9 @@ final class Api
         }
         if (preg_match('#^/api/transactions/([^/]+)$#', $path, $m) && $method === 'GET') {
             $this->getTransaction($m[1]);
+        }
+        if (preg_match('#^/api/transactions/([^/]+)$#', $path, $m) && ($method === 'PUT' || $method === 'PATCH')) {
+            $this->updateTransaction($m[1]);
         }
         if (preg_match('#^/api/transactions/([^/]+)$#', $path, $m) && $method === 'DELETE') {
             $this->deleteTransaction($m[1]);
@@ -177,9 +226,11 @@ final class Api
         }
         $id = Helpers::cuid('co');
         $now = Helpers::now();
+        $country = Helpers::normalizeCountry($body['country'] ?? null);
+        $currency = Helpers::normalizeCurrency($body['currency'] ?? null, $country);
         $stmt = $this->pdo->prepare(
-            'INSERT INTO companies (id, name, phone, email, gstin, address, state, currency, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            'INSERT INTO companies (id, name, phone, email, gstin, address, state, country, currency, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         $stmt->execute([
             $id, $name, $phone,
@@ -187,7 +238,8 @@ final class Api
             $this->nullable($body['gstin'] ?? null),
             $this->nullable($body['address'] ?? null),
             $this->nullable($body['state'] ?? null),
-            trim((string) ($body['currency'] ?? 'INR')) ?: 'INR',
+            $country,
+            $currency,
             $now, $now,
         ]);
         $this->getCompany($id);
@@ -198,14 +250,39 @@ final class Api
         $user = Auth::requireUser($this->pdo, $this->config);
         Auth::requireRoles($user, ['admin', 'office', 'accounts']);
         $body = Helpers::body();
+        if (array_key_exists('country', $body)) {
+            $body['country'] = Helpers::normalizeCountry($body['country'] ?? null);
+        }
+        if (array_key_exists('currency', $body) || array_key_exists('country', $body)) {
+            $country = Helpers::normalizeCountry($body['country'] ?? null);
+            $body['currency'] = Helpers::normalizeCurrency($body['currency'] ?? null, $country);
+        }
         $fields = [];
         $params = [];
-        foreach (['name', 'phone', 'email', 'gstin', 'address', 'state', 'currency'] as $key) {
-            if (array_key_exists($key, $body)) {
-                $fields[] = $key . ' = ?';
-                $params[] = in_array($key, ['email', 'gstin', 'address', 'state'], true)
-                    ? $this->nullable($body[$key])
-                    : trim((string) $body[$key]);
+        $map = [
+            'name' => 'name',
+            'phone' => 'phone',
+            'email' => 'email',
+            'gstin' => 'gstin',
+            'address' => 'address',
+            'state' => 'state',
+            'country' => 'country',
+            'currency' => 'currency',
+            'logoUrl' => 'logo_url',
+            'signatureUrl' => 'signature_url',
+            'defaultTerms' => 'default_terms',
+            'assetTagStart' => 'asset_tag_start',
+        ];
+        foreach ($map as $apiKey => $column) {
+            if (array_key_exists($apiKey, $body)) {
+                $fields[] = $column . ' = ?';
+                if ($apiKey === 'assetTagStart') {
+                    $params[] = Helpers::normalizeAssetTagStart((string) $body[$apiKey]) ?? 'EQ-0001';
+                } elseif (in_array($apiKey, ['email', 'gstin', 'address', 'state', 'logoUrl', 'signatureUrl', 'defaultTerms'], true)) {
+                    $params[] = $this->nullable($body[$apiKey]);
+                } else {
+                    $params[] = trim((string) $body[$apiKey]);
+                }
             }
         }
         if (!$fields) {
@@ -239,25 +316,41 @@ final class Api
         $body = Helpers::body();
         $companyId = (string) ($body['companyId'] ?? '');
         $name = trim((string) ($body['name'] ?? ''));
-        $type = (string) ($body['type'] ?? '');
-        if ($companyId === '' || $name === '' || !in_array($type, ['customer', 'supplier', 'both'], true)) {
+        $type = trim((string) ($body['type'] ?? 'not_specified'));
+        if ($type === '') {
+            $type = 'not_specified';
+        }
+        if ($companyId === '' || $name === '' || strlen($type) > 80) {
             Response::error('Invalid party data', 400);
         }
         $id = Helpers::cuid('pty');
         $now = Helpers::now();
+        $license = $this->nullable($body['licenseGst'] ?? $body['gstin'] ?? null);
         $stmt = $this->pdo->prepare(
-            'INSERT INTO parties (id, company_id, name, phone, email, gstin, type, opening_balance, balance_type, address, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            'INSERT INTO parties (
+                id, company_id, name, phone, email, gstin, type, type_other, contact_person,
+                opening_balance, balance_type, address, city, country, license_gst, price_category,
+                delivery_address, additional_fields, notes, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         $stmt->execute([
             $id, $companyId, $name,
             $this->nullable($body['phone'] ?? null),
             $this->nullable($body['email'] ?? null),
-            $this->nullable($body['gstin'] ?? null),
+            $license,
             $type,
+            $this->nullable($body['typeOther'] ?? null),
+            $this->nullable($body['contactPerson'] ?? null),
             (float) ($body['openingBalance'] ?? 0),
             (string) ($body['balanceType'] ?? 'to_receive'),
             $this->nullable($body['address'] ?? null),
+            $this->nullable($body['city'] ?? null),
+            $this->nullable($body['country'] ?? null),
+            $license,
+            $this->nullable($body['priceCategory'] ?? null),
+            $this->nullable($body['deliveryAddress'] ?? null),
+            Helpers::encodeAdditionalFields($body['additionalFields'] ?? null),
+            $this->nullable($body['notes'] ?? null),
             $now, $now,
         ]);
         $stmt = $this->pdo->prepare('SELECT * FROM parties WHERE id = ?');
@@ -276,9 +369,18 @@ final class Api
             'email' => 'email',
             'gstin' => 'gstin',
             'type' => 'type',
+            'typeOther' => 'type_other',
+            'contactPerson' => 'contact_person',
             'openingBalance' => 'opening_balance',
             'balanceType' => 'balance_type',
             'address' => 'address',
+            'city' => 'city',
+            'country' => 'country',
+            'licenseGst' => 'license_gst',
+            'priceCategory' => 'price_category',
+            'deliveryAddress' => 'delivery_address',
+            'additionalFields' => 'additional_fields',
+            'notes' => 'notes',
         ];
         $fields = [];
         $params = [];
@@ -287,13 +389,22 @@ final class Api
                 continue;
             }
             $fields[] = $col . ' = ?';
-            if (in_array($api, ['phone', 'email', 'gstin', 'address'], true)) {
+            if ($api === 'additionalFields') {
+                $params[] = Helpers::encodeAdditionalFields($body[$api]);
+            } elseif (in_array($api, [
+                'phone', 'email', 'gstin', 'address', 'typeOther', 'contactPerson',
+                'city', 'country', 'licenseGst', 'priceCategory', 'deliveryAddress', 'notes',
+            ], true)) {
                 $params[] = $this->nullable($body[$api]);
             } elseif ($api === 'openingBalance') {
                 $params[] = (float) $body[$api];
             } else {
                 $params[] = is_string($body[$api]) ? trim($body[$api]) : $body[$api];
             }
+        }
+        if (array_key_exists('licenseGst', $body) && !array_key_exists('gstin', $body)) {
+            $fields[] = 'gstin = ?';
+            $params[] = $this->nullable($body['licenseGst']);
         }
         if (!$fields) {
             Response::error('No fields to update', 400);
@@ -320,6 +431,265 @@ final class Api
         Response::json(['ok' => true]);
     }
 
+    private function defaultPartyTypes(): array
+    {
+        return [
+            ['not_specified', 'Not specified'],
+            ['supplier', 'Supplier'],
+            ['hospital', 'Hospital'],
+            ['clinic', 'Clinic'],
+            ['diagnostic_lab', 'Diagnostic Lab'],
+            ['research', 'Research'],
+            ['dental', 'Dental'],
+            ['other', 'Other'],
+        ];
+    }
+
+    private function ensurePartyTypes(string $companyId): void
+    {
+        $count = $this->pdo->prepare('SELECT COUNT(*) FROM party_types WHERE company_id = ?');
+        $count->execute([$companyId]);
+        if ((int) $count->fetchColumn() > 0) {
+            return;
+        }
+        $now = Helpers::now();
+        $stmt = $this->pdo->prepare(
+            'INSERT INTO party_types (id, company_id, slug, name, is_builtin, created_at) VALUES (?, ?, ?, ?, 1, ?)'
+        );
+        foreach ($this->defaultPartyTypes() as [$slug, $name]) {
+            $stmt->execute([Helpers::cuid('ptyt'), $companyId, $slug, $name, $now]);
+        }
+    }
+
+    private function listPartyTypes(): void
+    {
+        Auth::requireUser($this->pdo, $this->config);
+        $companyId = (string) ($_GET['companyId'] ?? '');
+        if ($companyId === '') {
+            Response::error('companyId required', 400);
+        }
+        $this->ensurePartyTypes($companyId);
+        $stmt = $this->pdo->prepare(
+            'SELECT * FROM party_types WHERE company_id = ? ORDER BY is_builtin DESC, name ASC'
+        );
+        $stmt->execute([$companyId]);
+        $types = array_map(static function (array $row): array {
+            return [
+                'id' => $row['id'],
+                'companyId' => $row['company_id'],
+                'slug' => $row['slug'],
+                'name' => $row['name'],
+                'builtin' => (bool) $row['is_builtin'],
+            ];
+        }, $stmt->fetchAll());
+        Response::json(['types' => $types]);
+    }
+
+    private function createPartyType(): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requireRoles($user, ['admin', 'office', 'store', 'accounts']);
+        $body = Helpers::body();
+        $companyId = (string) ($body['companyId'] ?? '');
+        $name = trim((string) ($body['name'] ?? ''));
+        if ($companyId === '' || $name === '') {
+            Response::error('Type name required', 400);
+        }
+        $this->ensurePartyTypes($companyId);
+        $slug = Helpers::slug($name);
+        if ($slug === '') {
+            $slug = 'type_' . substr(Helpers::cuid(''), 0, 6);
+        }
+        $exists = $this->pdo->prepare('SELECT id FROM party_types WHERE company_id = ? AND slug = ?');
+        $exists->execute([$companyId, $slug]);
+        if ($exists->fetch()) {
+            Response::error('This type already exists', 409);
+        }
+        $id = Helpers::cuid('ptyt');
+        $this->pdo->prepare(
+            'INSERT INTO party_types (id, company_id, slug, name, is_builtin, created_at) VALUES (?, ?, ?, ?, 0, ?)'
+        )->execute([$id, $companyId, $slug, $name, Helpers::now()]);
+        Response::json([
+            'type' => [
+                'id' => $id,
+                'companyId' => $companyId,
+                'slug' => $slug,
+                'name' => $name,
+                'builtin' => false,
+            ],
+        ], 201);
+    }
+
+    private function deletePartyType(string $id): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requireRoles($user, ['admin', 'office']);
+        $stmt = $this->pdo->prepare('SELECT * FROM party_types WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        if (!$row) {
+            Response::error('Type not found', 404);
+        }
+        if ((int) $row['is_builtin'] === 1) {
+            Response::error('Default types cannot be deleted', 400);
+        }
+        $this->pdo->prepare('DELETE FROM party_types WHERE id = ?')->execute([$id]);
+        Response::json(['ok' => true]);
+    }
+
+    private function listItemCategories(): void
+    {
+        Auth::requireUser($this->pdo, $this->config);
+        $companyId = (string) ($_GET['companyId'] ?? '');
+        if ($companyId === '') {
+            Response::error('companyId required', 400);
+        }
+        $this->syncItemCategories($companyId);
+        $stmt = $this->pdo->prepare(
+            'SELECT * FROM item_categories WHERE company_id = ? ORDER BY name ASC'
+        );
+        $stmt->execute([$companyId]);
+        $categories = array_map(static function (array $row): array {
+            return [
+                'id' => $row['id'],
+                'companyId' => $row['company_id'],
+                'name' => $row['name'],
+            ];
+        }, $stmt->fetchAll());
+        Response::json(['categories' => $categories]);
+    }
+
+    private function syncItemCategories(string $companyId): void
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT DISTINCT category FROM items WHERE company_id = ? AND category IS NOT NULL AND category <> \'\''
+        );
+        $stmt->execute([$companyId]);
+        $insert = $this->pdo->prepare(
+            'INSERT IGNORE INTO item_categories (id, company_id, name, created_at) VALUES (?, ?, ?, ?)'
+        );
+        $now = Helpers::now();
+        foreach ($stmt->fetchAll() as $row) {
+            $name = trim((string) ($row['category'] ?? ''));
+            if ($name === '') {
+                continue;
+            }
+            $insert->execute([Helpers::cuid('icat'), $companyId, $name, $now]);
+        }
+    }
+
+    private function createItemCategory(): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requireRoles($user, ['admin', 'office', 'store']);
+        $body = Helpers::body();
+        $companyId = (string) ($body['companyId'] ?? '');
+        $name = trim((string) ($body['name'] ?? ''));
+        if ($companyId === '' || $name === '') {
+            Response::error('Category name required', 400);
+        }
+        $exists = $this->pdo->prepare(
+            'SELECT * FROM item_categories WHERE company_id = ? AND name = ?'
+        );
+        $exists->execute([$companyId, $name]);
+        $row = $exists->fetch();
+        if ($row) {
+            Response::json([
+                'category' => [
+                    'id' => $row['id'],
+                    'companyId' => $row['company_id'],
+                    'name' => $row['name'],
+                ],
+            ]);
+            return;
+        }
+        $id = Helpers::cuid('icat');
+        $this->pdo->prepare(
+            'INSERT INTO item_categories (id, company_id, name, created_at) VALUES (?, ?, ?, ?)'
+        )->execute([$id, $companyId, $name, Helpers::now()]);
+        Response::json([
+            'category' => [
+                'id' => $id,
+                'companyId' => $companyId,
+                'name' => $name,
+            ],
+        ], 201);
+    }
+
+    private function deleteItemCategory(string $id): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requireRoles($user, ['admin', 'office', 'store']);
+        $this->pdo->prepare('DELETE FROM item_categories WHERE id = ?')->execute([$id]);
+        Response::json(['ok' => true]);
+    }
+
+    private function assertScanId(string $id): void
+    {
+        if (!preg_match('/^[A-Za-z0-9_-]{4,80}$/', $id)) {
+            Response::error('Not found', 404);
+        }
+    }
+
+    /** @param array<string, mixed> $row */
+    private function scanMeta(array $row): array
+    {
+        return [
+            'companyName' => (string) ($row['company_name'] ?? ''),
+            'currency' => Helpers::normalizeCurrency(
+                isset($row['company_currency']) ? (string) $row['company_currency'] : null,
+                isset($row['company_country']) ? (string) $row['company_country'] : null
+            ),
+        ];
+    }
+
+    private function scanProduct(string $id): void
+    {
+        $this->assertScanId($id);
+        $stmt = $this->pdo->prepare(
+            'SELECT i.*, c.name AS company_name, c.currency AS company_currency, c.country AS company_country
+             FROM items i
+             LEFT JOIN companies c ON c.id = i.company_id
+             WHERE i.id = ?'
+        );
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        if (!$row || (($row['item_type'] ?? 'product') !== 'product')) {
+            Response::error('Not found', 404);
+        }
+        $meta = $this->scanMeta($row);
+        Response::json([
+            'kind' => 'product',
+            'companyName' => $meta['companyName'],
+            'currency' => $meta['currency'],
+            'record' => Helpers::itemToApi($row),
+        ]);
+    }
+
+    private function scanEquipment(string $id): void
+    {
+        $this->assertScanId($id);
+        $stmt = $this->pdo->prepare(
+            'SELECT e.*, p.name AS customer_name, c.name AS company_name, c.currency AS company_currency, c.country AS company_country
+             FROM equipment e
+             LEFT JOIN parties p ON p.id = e.customer_id
+             LEFT JOIN companies c ON c.id = e.company_id
+             WHERE e.id = ?'
+        );
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        if (!$row) {
+            Response::error('Not found', 404);
+        }
+        $meta = $this->scanMeta($row);
+        Response::json([
+            'kind' => 'equipment',
+            'companyName' => $meta['companyName'],
+            'currency' => $meta['currency'],
+            'record' => Helpers::equipmentToApi($row),
+        ]);
+    }
+
     private function listItems(): void
     {
         Auth::requireUser($this->pdo, $this->config);
@@ -327,8 +697,14 @@ final class Api
         if ($companyId === '') {
             Response::error('companyId required', 400);
         }
-        $stmt = $this->pdo->prepare('SELECT * FROM items WHERE company_id = ? ORDER BY name ASC');
-        $stmt->execute([$companyId]);
+        $type = strtolower(trim((string) ($_GET['itemType'] ?? '')));
+        if ($type === 'product' || $type === 'service') {
+            $stmt = $this->pdo->prepare('SELECT * FROM items WHERE company_id = ? AND item_type = ? ORDER BY name ASC');
+            $stmt->execute([$companyId, $type]);
+        } else {
+            $stmt = $this->pdo->prepare('SELECT * FROM items WHERE company_id = ? ORDER BY name ASC');
+            $stmt->execute([$companyId]);
+        }
         Response::json(['items' => array_map([Helpers::class, 'itemToApi'], $stmt->fetchAll())]);
     }
 
@@ -344,18 +720,22 @@ final class Api
         }
         $id = Helpers::cuid('itm');
         $now = Helpers::now();
+        $itemType = strtolower(trim((string) ($body['itemType'] ?? 'product'))) === 'service' ? 'service' : 'product';
+        $stockQty = $itemType === 'service' ? 0 : (float) ($body['stockQty'] ?? 0);
         $this->pdo->prepare(
-            'INSERT INTO items (id, company_id, name, sku, unit, sale_price, purchase_price, stock_qty, tax_percent, category, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            'INSERT INTO items (id, company_id, name, sku, unit, sale_price, purchase_price, stock_qty, tax_percent, category, item_type, image_url, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         )->execute([
             $id, $companyId, $name,
             $this->nullable($body['sku'] ?? null),
             trim((string) ($body['unit'] ?? 'pcs')) ?: 'pcs',
             (float) ($body['salePrice'] ?? 0),
             (float) ($body['purchasePrice'] ?? 0),
-            (float) ($body['stockQty'] ?? 0),
+            $stockQty,
             (float) ($body['taxPercent'] ?? 18),
             $this->nullable($body['category'] ?? null),
+            $itemType,
+            $this->nullable($body['imageUrl'] ?? null),
             $now, $now,
         ]);
         $stmt = $this->pdo->prepare('SELECT * FROM items WHERE id = ?');
@@ -377,6 +757,8 @@ final class Api
             'stockQty' => 'stock_qty',
             'taxPercent' => 'tax_percent',
             'category' => 'category',
+            'itemType' => 'item_type',
+            'imageUrl' => 'image_url',
         ];
         $fields = [];
         $params = [];
@@ -385,10 +767,12 @@ final class Api
                 continue;
             }
             $fields[] = $col . ' = ?';
-            if (in_array($api, ['sku', 'category'], true)) {
+            if (in_array($api, ['sku', 'category', 'imageUrl'], true)) {
                 $params[] = $this->nullable($body[$api]);
             } elseif (in_array($api, ['salePrice', 'purchasePrice', 'stockQty', 'taxPercent'], true)) {
                 $params[] = (float) $body[$api];
+            } elseif ($api === 'itemType') {
+                $params[] = strtolower(trim((string) $body[$api])) === 'service' ? 'service' : 'product';
             } else {
                 $params[] = trim((string) $body[$api]);
             }
@@ -415,6 +799,219 @@ final class Api
         Auth::requireRoles($user, ['admin', 'office', 'store']);
         $this->pdo->prepare('DELETE FROM items WHERE id = ?')->execute([$id]);
         Response::json(['ok' => true]);
+    }
+
+    private function listEquipment(): void
+    {
+        Auth::requireUser($this->pdo, $this->config);
+        $companyId = (string) ($_GET['companyId'] ?? '');
+        if ($companyId === '') {
+            Response::error('companyId required', 400);
+        }
+        $stmt = $this->pdo->prepare(
+            'SELECT e.*, p.name AS customer_name
+             FROM equipment e
+             LEFT JOIN parties p ON p.id = e.customer_id
+             WHERE e.company_id = ?
+             ORDER BY e.created_at DESC'
+        );
+        $stmt->execute([$companyId]);
+        Response::json(['equipment' => array_map([Helpers::class, 'equipmentToApi'], $stmt->fetchAll())]);
+    }
+
+    private function createEquipment(): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requireRoles($user, ['admin', 'office', 'store']);
+        $body = Helpers::body();
+        $companyId = (string) ($body['companyId'] ?? $_GET['companyId'] ?? '');
+        $name = trim((string) ($body['name'] ?? ''));
+        $serial = trim((string) ($body['serialNumber'] ?? ''));
+        if ($companyId === '' || $name === '' || $serial === '') {
+            Response::error('name and serialNumber are required', 400);
+        }
+        if ($this->serialTaken($companyId, $serial, null)) {
+            Response::error('Serial number already taken. Please check.', 409);
+        }
+        $id = Helpers::cuid('eqp');
+        $now = Helpers::now();
+        $co = $this->pdo->prepare('SELECT asset_tag_start FROM companies WHERE id = ?');
+        $co->execute([$companyId]);
+        $coRow = $co->fetch();
+        $assetTag = Helpers::nextAssetTag(
+            $this->pdo,
+            $companyId,
+            $coRow['asset_tag_start'] ?? 'EQ-0001'
+        );
+        $warrantyOff = $this->boolVal($body['noMachineWarranty'] ?? false);
+        $serviceOff = $this->boolVal($body['noServiceWarranty'] ?? false);
+        $status = $this->normalizeStatus($body['currentStatus'] ?? 'in_service');
+        try {
+            $this->pdo->prepare(
+                'INSERT INTO equipment (
+                    id, company_id, asset_tag, name, model, manufacturer, category, serial_number,
+                    customer_id, location, install_date, warranty_start, warranty_end, no_machine_warranty,
+                    service_warranty_start, service_warranty_end, no_service_warranty, `condition`,
+                    current_status, additional_note, created_at, updated_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            )->execute([
+                $id,
+                $companyId,
+                $assetTag,
+                $name,
+                $this->nullable($body['model'] ?? null),
+                $this->nullable($body['manufacturer'] ?? null),
+                $this->nullable($body['category'] ?? null),
+                $serial,
+                $this->nullable($body['customerId'] ?? null),
+                $this->nullable($body['location'] ?? null),
+                $this->nullable($body['installDate'] ?? null),
+                $warrantyOff ? null : $this->nullable($body['warrantyStart'] ?? null),
+                $warrantyOff ? null : $this->nullable($body['warrantyEnd'] ?? null),
+                $warrantyOff ? 1 : 0,
+                $serviceOff ? null : $this->nullable($body['serviceWarrantyStart'] ?? null),
+                $serviceOff ? null : $this->nullable($body['serviceWarrantyEnd'] ?? null),
+                $serviceOff ? 1 : 0,
+                $this->nullable($body['condition'] ?? null),
+                $status,
+                $this->nullable($body['additionalNote'] ?? null),
+                $now,
+                $now,
+            ]);
+        } catch (PDOException $e) {
+            if (stripos($e->getMessage(), 'Duplicate') !== false) {
+                Response::error('Serial number already taken. Please check.', 409);
+            }
+            throw $e;
+        }
+        Response::json(['equipment' => $this->fetchEquipment($id)], 201);
+    }
+
+    private function updateEquipment(string $id): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requireRoles($user, ['admin', 'office', 'store']);
+        $body = Helpers::body();
+        $existing = $this->pdo->prepare('SELECT * FROM equipment WHERE id = ?');
+        $existing->execute([$id]);
+        $row = $existing->fetch();
+        if (!$row) {
+            Response::error('Equipment not found', 404);
+        }
+        $companyId = (string) $row['company_id'];
+        if (array_key_exists('serialNumber', $body)) {
+            $serial = trim((string) $body['serialNumber']);
+            if ($serial === '') {
+                Response::error('serialNumber is required', 400);
+            }
+            if ($this->serialTaken($companyId, $serial, $id)) {
+                Response::error('Serial number already taken. Please check.', 409);
+            }
+        }
+        $map = [
+            'name' => 'name',
+            'model' => 'model',
+            'manufacturer' => 'manufacturer',
+            'category' => 'category',
+            'serialNumber' => 'serial_number',
+            'customerId' => 'customer_id',
+            'location' => 'location',
+            'installDate' => 'install_date',
+            'warrantyStart' => 'warranty_start',
+            'warrantyEnd' => 'warranty_end',
+            'noMachineWarranty' => 'no_machine_warranty',
+            'serviceWarrantyStart' => 'service_warranty_start',
+            'serviceWarrantyEnd' => 'service_warranty_end',
+            'noServiceWarranty' => 'no_service_warranty',
+            'condition' => 'condition',
+            'currentStatus' => 'current_status',
+            'additionalNote' => 'additional_note',
+        ];
+        $fields = [];
+        $params = [];
+        foreach ($map as $api => $col) {
+            if (!array_key_exists($api, $body)) {
+                continue;
+            }
+            $fields[] = ($col === 'condition' ? '`condition`' : $col) . ' = ?';
+            if (in_array($api, ['noMachineWarranty', 'noServiceWarranty'], true)) {
+                $params[] = $this->boolVal($body[$api]) ? 1 : 0;
+            } elseif ($api === 'currentStatus') {
+                $params[] = $this->normalizeStatus($body[$api]);
+            } elseif ($api === 'name' || $api === 'serialNumber') {
+                $params[] = trim((string) $body[$api]);
+            } else {
+                $params[] = $this->nullable($body[$api]);
+            }
+        }
+        if (!$fields) {
+            Response::error('No fields to update', 400);
+        }
+        if (!empty($body['noMachineWarranty'])) {
+            $fields[] = 'warranty_start = ?';
+            $params[] = null;
+            $fields[] = 'warranty_end = ?';
+            $params[] = null;
+        }
+        if (!empty($body['noServiceWarranty'])) {
+            $fields[] = 'service_warranty_start = ?';
+            $params[] = null;
+            $fields[] = 'service_warranty_end = ?';
+            $params[] = null;
+        }
+        $fields[] = 'updated_at = ?';
+        $params[] = Helpers::now();
+        $params[] = $id;
+        try {
+            $this->pdo->prepare('UPDATE equipment SET ' . implode(', ', $fields) . ' WHERE id = ?')->execute($params);
+        } catch (PDOException $e) {
+            if (stripos($e->getMessage(), 'Duplicate') !== false) {
+                Response::error('Serial number already taken. Please check.', 409);
+            }
+            throw $e;
+        }
+        Response::json(['equipment' => $this->fetchEquipment($id)]);
+    }
+
+    private function fetchEquipment(string $id): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT e.*, p.name AS customer_name
+             FROM equipment e
+             LEFT JOIN parties p ON p.id = e.customer_id
+             WHERE e.id = ?'
+        );
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        if (!$row) {
+            Response::error('Equipment not found', 404);
+        }
+        return Helpers::equipmentToApi($row);
+    }
+
+    private function serialTaken(string $companyId, string $serial, ?string $exceptId): bool
+    {
+        $sql = 'SELECT id FROM equipment WHERE company_id = ? AND serial_number = ?';
+        $params = [$companyId, $serial];
+        if ($exceptId) {
+            $sql .= ' AND id <> ?';
+            $params[] = $exceptId;
+        }
+        $stmt = $this->pdo->prepare($sql . ' LIMIT 1');
+        $stmt->execute($params);
+        return (bool) $stmt->fetch();
+    }
+
+    private function normalizeStatus($value): string
+    {
+        $allowed = ['in_service', 'in_repair', 'in_storage', 'decommissioned', 'disposed'];
+        $status = strtolower(trim((string) $value));
+        return in_array($status, $allowed, true) ? $status : 'in_service';
+    }
+
+    private function boolVal($value): bool
+    {
+        return $value === true || $value === 1 || $value === '1' || $value === 'true';
     }
 
     private function listAccounts(): void
@@ -472,9 +1069,26 @@ final class Api
             $stmt->execute([$companyId]);
         }
         $rows = $stmt->fetchAll();
+        if ($type === '' || $type === 'sale') {
+            $docsApi = new Docs($this->pdo, $this->config);
+            foreach ($rows as $row) {
+                if (($row['type'] ?? '') === 'sale') {
+                    $docsApi->ensureConfirmedSaleOrder($row, $this->linesFor($row['id']));
+                }
+            }
+        }
+        $saleOrders = ($type === '' || $type === 'sale')
+            ? $this->saleOrdersForInvoices($companyId)
+            : [];
         $out = [];
         foreach ($rows as $row) {
-            $out[] = Helpers::txnToApi($row, $this->linesFor($row['id']));
+            $api = Helpers::txnToApi($row, $this->linesFor($row['id']));
+            if (($row['type'] ?? '') === 'sale') {
+                $link = $saleOrders[$row['id']] ?? null;
+                $api['saleOrderId'] = $link['id'] ?? null;
+                $api['saleOrderNumber'] = $link['number'] ?? null;
+            }
+            $out[] = $api;
         }
         Response::json(['transactions' => $out]);
     }
@@ -488,7 +1102,62 @@ final class Api
         if (!$row) {
             Response::error('Transaction not found', 404);
         }
-        Response::json(['transaction' => Helpers::txnToApi($row, $this->linesFor($id))]);
+        if (($row['type'] ?? '') === 'sale') {
+            (new Docs($this->pdo, $this->config))->ensureConfirmedSaleOrder($row, $this->linesFor($id));
+        }
+        $api = Helpers::txnToApi($row, $this->linesFor($id));
+        if (($row['type'] ?? '') === 'sale') {
+            $saleOrders = $this->saleOrdersForInvoices((string) $row['company_id']);
+            $link = $saleOrders[$row['id']] ?? null;
+            $api['saleOrderId'] = $link['id'] ?? null;
+            $api['saleOrderNumber'] = $link['number'] ?? null;
+        }
+        Response::json(['transaction' => $api]);
+    }
+
+    /**
+     * Sale invoice id => the sale order that became this invoice
+     * (sale order → delivery → invoice).
+     *
+     * @return array<string, array{id: string, number: string}>
+     */
+    private function saleOrdersForInvoices(string $companyId): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT id, doc_type, number, converted_to_id
+             FROM docs
+             WHERE company_id = ? AND doc_type IN (\'quotation\', \'sale_order\', \'delivery\')'
+        );
+        $stmt->execute([$companyId]);
+        $parentOf = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $childId = (string) ($row['converted_to_id'] ?? '');
+            if ($childId === '') {
+                continue;
+            }
+            $parentOf[$childId] = $row;
+        }
+
+        $orders = [];
+        foreach (array_keys($parentOf) as $childId) {
+            $currentId = (string) $childId;
+            $order = null;
+            for ($guard = 0; $guard < 6 && isset($parentOf[$currentId]); $guard++) {
+                $parent = $parentOf[$currentId];
+                if (($parent['doc_type'] ?? '') === 'sale_order') {
+                    $order = $parent;
+                    break;
+                }
+                $currentId = (string) $parent['id'];
+            }
+            if ($order) {
+                $orders[(string) $childId] = [
+                    'id' => (string) $order['id'],
+                    'number' => (string) $order['number'],
+                ];
+            }
+        }
+        return $orders;
     }
 
     private function deleteTransaction(string $id): void
@@ -506,7 +1175,7 @@ final class Api
         $now = Helpers::now();
         try {
             $this->pdo->beginTransaction();
-            if ($type === 'sale' || $type === 'purchase') {
+            if (($type === 'sale' || $type === 'purchase') && (int) ($row['stock_effect'] ?? 1) === 1) {
                 $stockStmt = $this->pdo->prepare('UPDATE items SET stock_qty = stock_qty + ?, updated_at = ? WHERE id = ?');
                 foreach ($lines as $line) {
                     $itemId = $line['item_id'] ?? null;
@@ -586,12 +1255,120 @@ final class Api
                     $stockStmt->execute([$delta, $now, $itemId]);
                 }
             }
+            if ($type === 'sale') {
+                $saved = $this->pdo->prepare('SELECT * FROM transactions WHERE id = ?');
+                $saved->execute([$id]);
+                $savedRow = $saved->fetch();
+                if ($savedRow) {
+                    (new Docs($this->pdo, $this->config))->ensureConfirmedSaleOrder(
+                        $savedRow,
+                        $this->linesFor($id)
+                    );
+                }
+            }
             $this->pdo->commit();
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {
                 $this->pdo->rollBack();
             }
             Response::error('Failed to create transaction', 500, $e->getMessage());
+        }
+
+        $this->getTransaction($id);
+    }
+
+    private function updateTransaction(string $id): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requireRoles($user, ['admin', 'office', 'store', 'accounts']);
+        $body = Helpers::body();
+
+        $stmt = $this->pdo->prepare('SELECT * FROM transactions WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        if (!$row) {
+            Response::error('Transaction not found', 404);
+        }
+        $type = (string) $row['type'];
+        if ($type !== 'sale' && $type !== 'purchase') {
+            Response::error('Only sale invoices and purchase bills can be edited', 400);
+        }
+        $date = (string) ($body['date'] ?? $row['date']);
+        if ($date === '') {
+            Response::error('Date required', 400);
+        }
+        $lines = is_array($body['lines'] ?? null) ? $body['lines'] : [];
+        if (!$lines) {
+            Response::error('Add at least one line', 400);
+        }
+        $now = Helpers::now();
+        $oldLines = $this->linesFor($id);
+        $affectsStock = (int) ($row['stock_effect'] ?? 1) === 1;
+
+        try {
+            $this->pdo->beginTransaction();
+            $this->pdo->prepare(
+                'UPDATE transactions SET date = ?, party_id = ?, payment_type_id = ?, notes = ?, subtotal = ?, tax_total = ?, grand_total = ?, updated_at = ? WHERE id = ?'
+            )->execute([
+                $date,
+                $this->nullable($body['partyId'] ?? $row['party_id']),
+                $this->nullable($body['paymentTypeId'] ?? null),
+                $this->nullable($body['notes'] ?? null),
+                (float) ($body['subtotal'] ?? 0),
+                (float) ($body['taxTotal'] ?? 0),
+                (float) ($body['grandTotal'] ?? 0),
+                $now,
+                $id,
+            ]);
+
+            $stockStmt = $this->pdo->prepare('UPDATE items SET stock_qty = stock_qty + ?, updated_at = ? WHERE id = ?');
+            if ($affectsStock) {
+                foreach ($oldLines as $line) {
+                    $itemId = $line['item_id'] ?? null;
+                    if (!$itemId) {
+                        continue;
+                    }
+                    $qty = (float) ($line['qty'] ?? 0);
+                    $stockStmt->execute([$type === 'sale' ? $qty : -$qty, $now, $itemId]);
+                }
+            }
+            $this->pdo->prepare('DELETE FROM line_items WHERE transaction_id = ?')->execute([$id]);
+
+            $lineStmt = $this->pdo->prepare(
+                'INSERT INTO line_items (id, company_id, transaction_id, item_id, name, qty, rate, tax_percent, amount)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            );
+            foreach ($lines as $line) {
+                $itemId = $this->nullable($line['itemId'] ?? null);
+                $qty = (float) ($line['qty'] ?? 0);
+                $lineStmt->execute([
+                    Helpers::cuid('li'),
+                    $row['company_id'],
+                    $id,
+                    $itemId,
+                    trim((string) ($line['name'] ?? '')),
+                    $qty,
+                    (float) ($line['rate'] ?? 0),
+                    (float) ($line['taxPercent'] ?? 0),
+                    (float) ($line['amount'] ?? 0),
+                ]);
+                if ($affectsStock && $itemId) {
+                    $stockStmt->execute([$type === 'sale' ? -$qty : $qty, $now, $itemId]);
+                }
+            }
+
+            $freshStmt = $this->pdo->prepare('SELECT * FROM transactions WHERE id = ?');
+            $freshStmt->execute([$id]);
+            $fresh = $freshStmt->fetch();
+            if ($fresh && $type === 'sale') {
+                (new Docs($this->pdo, $this->config))->syncDirectSaleOrder($fresh, $this->linesFor($id));
+            }
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            Response::error('Failed to update transaction', 500, $e->getMessage());
         }
 
         $this->getTransaction($id);

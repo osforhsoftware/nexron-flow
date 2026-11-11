@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS companies (
   gstin VARCHAR(30) NULL,
   address TEXT NULL,
   state VARCHAR(80) NULL,
-  currency VARCHAR(10) NOT NULL DEFAULT 'INR',
+  country VARCHAR(10) NOT NULL DEFAULT 'AE',
+  currency VARCHAR(10) NOT NULL DEFAULT 'AED',
   created_at VARCHAR(40) NOT NULL,
   updated_at VARCHAR(40) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -65,6 +66,7 @@ CREATE TABLE IF NOT EXISTS items (
   stock_qty DOUBLE NOT NULL DEFAULT 0,
   tax_percent DOUBLE NOT NULL DEFAULT 18,
   category VARCHAR(100) NULL,
+  item_type VARCHAR(20) NOT NULL DEFAULT 'product',
   created_at VARCHAR(40) NOT NULL,
   updated_at VARCHAR(40) NOT NULL,
   CONSTRAINT fk_items_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
@@ -168,7 +170,77 @@ CREATE TABLE IF NOT EXISTS doc_lines (
   rate DOUBLE NOT NULL,
   tax_percent DOUBLE NOT NULL DEFAULT 0,
   amount DOUBLE NOT NULL,
+  discount_percent DOUBLE NOT NULL DEFAULT 0,
+  unit VARCHAR(30) NULL,
   INDEX idx_doc_lines_doc (doc_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+SQL,
+            <<<SQL
+CREATE TABLE IF NOT EXISTS item_categories (
+  id VARCHAR(64) PRIMARY KEY,
+  company_id VARCHAR(64) NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  created_at VARCHAR(40) NOT NULL,
+  CONSTRAINT fk_item_categories_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
+  UNIQUE KEY uniq_item_categories_company_name (company_id, name),
+  INDEX idx_item_categories_company (company_id, name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+SQL,
+            <<<SQL
+CREATE TABLE IF NOT EXISTS party_types (
+  id VARCHAR(64) PRIMARY KEY,
+  company_id VARCHAR(64) NOT NULL,
+  slug VARCHAR(80) NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  is_builtin TINYINT(1) NOT NULL DEFAULT 0,
+  created_at VARCHAR(40) NOT NULL,
+  CONSTRAINT fk_party_types_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
+  UNIQUE KEY uniq_party_types_company_slug (company_id, slug),
+  INDEX idx_party_types_company (company_id, name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+SQL,
+            <<<SQL
+CREATE TABLE IF NOT EXISTS doc_revisions (
+  id VARCHAR(64) PRIMARY KEY,
+  company_id VARCHAR(64) NOT NULL,
+  doc_id VARCHAR(64) NOT NULL,
+  revision INT NOT NULL DEFAULT 1,
+  snapshot LONGTEXT NOT NULL,
+  changed_by VARCHAR(64) NULL,
+  change_note VARCHAR(255) NULL,
+  created_at VARCHAR(40) NOT NULL,
+  INDEX idx_doc_revisions_doc (doc_id, revision)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+SQL,
+            <<<SQL
+CREATE TABLE IF NOT EXISTS equipment (
+  id VARCHAR(64) PRIMARY KEY,
+  company_id VARCHAR(64) NOT NULL,
+  asset_tag VARCHAR(64) NOT NULL,
+  name VARCHAR(200) NOT NULL,
+  model VARCHAR(120) NULL,
+  manufacturer VARCHAR(120) NULL,
+  category VARCHAR(80) NULL,
+  serial_number VARCHAR(120) NOT NULL,
+  customer_id VARCHAR(64) NULL,
+  location VARCHAR(200) NULL,
+  install_date VARCHAR(20) NULL,
+  warranty_start VARCHAR(20) NULL,
+  warranty_end VARCHAR(20) NULL,
+  no_machine_warranty TINYINT(1) NOT NULL DEFAULT 0,
+  service_warranty_start VARCHAR(20) NULL,
+  service_warranty_end VARCHAR(20) NULL,
+  no_service_warranty TINYINT(1) NOT NULL DEFAULT 0,
+  `condition` VARCHAR(80) NULL,
+  current_status VARCHAR(40) NOT NULL DEFAULT 'in_service',
+  additional_note TEXT NULL,
+  created_at VARCHAR(40) NOT NULL,
+  updated_at VARCHAR(40) NOT NULL,
+  CONSTRAINT fk_equipment_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
+  CONSTRAINT fk_equipment_customer FOREIGN KEY (customer_id) REFERENCES parties(id) ON DELETE SET NULL,
+  UNIQUE KEY uniq_equipment_serial (company_id, serial_number),
+  UNIQUE KEY uniq_equipment_asset (company_id, asset_tag),
+  INDEX idx_equipment_company (company_id, name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 SQL,
         ];
@@ -185,6 +257,71 @@ SQL,
                 ) {
                     throw $e;
                 }
+            }
+        }
+
+        self::addColumnIfMissing($pdo, 'parties', 'type_other', 'VARCHAR(80) NULL');
+        self::addColumnIfMissing($pdo, 'parties', 'contact_person', 'VARCHAR(150) NULL');
+        self::addColumnIfMissing($pdo, 'parties', 'city', 'VARCHAR(120) NULL');
+        self::addColumnIfMissing($pdo, 'parties', 'country', 'VARCHAR(80) NULL');
+        self::addColumnIfMissing($pdo, 'parties', 'license_gst', 'VARCHAR(80) NULL');
+        self::addColumnIfMissing($pdo, 'parties', 'price_category', 'VARCHAR(80) NULL');
+        self::addColumnIfMissing($pdo, 'parties', 'delivery_address', 'TEXT NULL');
+        self::addColumnIfMissing($pdo, 'parties', 'additional_fields', 'TEXT NULL');
+        self::addColumnIfMissing($pdo, 'parties', 'notes', 'TEXT NULL');
+        try {
+            $pdo->exec('ALTER TABLE parties MODIFY type VARCHAR(80) NOT NULL');
+        } catch (PDOException $e) {
+            // ignore
+        }
+
+        self::addColumnIfMissing($pdo, 'companies', 'country', "VARCHAR(10) NOT NULL DEFAULT 'AE' AFTER state");
+        self::addColumnIfMissing($pdo, 'companies', 'logo_url', 'TEXT NULL');
+        self::addColumnIfMissing($pdo, 'companies', 'signature_url', 'TEXT NULL');
+        self::addColumnIfMissing($pdo, 'companies', 'default_terms', 'TEXT NULL');
+        self::addColumnIfMissing($pdo, 'companies', 'asset_tag_start', "VARCHAR(64) NULL");
+
+        self::addColumnIfMissing($pdo, 'items', 'item_type', "VARCHAR(20) NOT NULL DEFAULT 'product'");
+        self::addColumnIfMissing($pdo, 'items', 'image_url', 'MEDIUMTEXT NULL');
+
+        self::addColumnIfMissing($pdo, 'docs', 'valid_until', 'VARCHAR(20) NULL');
+        self::addColumnIfMissing($pdo, 'docs', 'follow_up_date', 'VARCHAR(20) NULL');
+        self::addColumnIfMissing($pdo, 'docs', 'terms', 'TEXT NULL');
+        self::addColumnIfMissing($pdo, 'docs', 'billing_address', 'TEXT NULL');
+        self::addColumnIfMissing($pdo, 'docs', 'state_of_supply', 'VARCHAR(80) NULL');
+        self::addColumnIfMissing($pdo, 'docs', 'price_tax_mode', "VARCHAR(20) NOT NULL DEFAULT 'without'");
+        self::addColumnIfMissing($pdo, 'docs', 'round_off', 'TINYINT(1) NOT NULL DEFAULT 1');
+        self::addColumnIfMissing($pdo, 'docs', 'discount_total', 'DOUBLE NOT NULL DEFAULT 0');
+        self::addColumnIfMissing($pdo, 'docs', 'revision', 'INT NOT NULL DEFAULT 1');
+        self::addColumnIfMissing($pdo, 'docs', 'cloned_from_id', 'VARCHAR(64) NULL');
+        self::addColumnIfMissing($pdo, 'docs', 'ref_no', 'VARCHAR(60) NULL');
+        self::addColumnIfMissing($pdo, 'docs', 'original_bill_no', 'VARCHAR(80) NULL');
+        self::addColumnIfMissing($pdo, 'docs', 'stock_posted_at', 'VARCHAR(40) NULL');
+
+        self::addColumnIfMissing($pdo, 'doc_lines', 'discount_percent', 'DOUBLE NOT NULL DEFAULT 0');
+        self::addColumnIfMissing($pdo, 'doc_lines', 'unit', 'VARCHAR(30) NULL');
+        self::addColumnIfMissing($pdo, 'doc_lines', 'received_qty', 'DOUBLE NULL');
+        self::addColumnIfMissing($pdo, 'transactions', 'stock_effect', 'TINYINT(1) NOT NULL DEFAULT 1');
+
+        // Legacy pipeline used status=open; map to draft for quotations lifecycle.
+        try {
+            $pdo->exec("UPDATE docs SET status = 'draft' WHERE status = 'open'");
+        } catch (PDOException $e) {
+            // ignore
+        }
+    }
+
+    private static function addColumnIfMissing(PDO $pdo, string $table, string $column, string $definition): void
+    {
+        try {
+            $pdo->exec("ALTER TABLE {$table} ADD COLUMN {$column} {$definition}");
+        } catch (PDOException $e) {
+            $msg = $e->getMessage();
+            if (
+                stripos($msg, 'Duplicate') === false
+                && stripos($msg, 'exists') === false
+            ) {
+                throw $e;
             }
         }
     }

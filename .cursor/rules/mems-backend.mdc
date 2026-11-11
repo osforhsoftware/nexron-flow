@@ -1,0 +1,16 @@
+---
+description: Live PHP API is C:\xampp\htdocs\mems-backend only
+alwaysApply: true
+---
+
+# Live backend: mems-backend
+
+There is **no** `backend/` folder in this repo.
+
+All API / PHP / DB work goes only here:
+
+`C:\xampp\htdocs\mems-backend`
+
+- Frontend Vite proxies `/api` → `http://127.0.0.1/mems-backend`
+- Health: `http://127.0.0.1/mems-backend/api/health`
+- Seed: `npm run db:seed` or `C:\xampp\php\php.exe C:\xampp\htdocs\mems-backend\scripts\seed.php`

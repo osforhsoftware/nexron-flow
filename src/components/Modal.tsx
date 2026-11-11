@@ -7,15 +7,24 @@ export function Modal({
   onClose,
   footer,
   className,
+  nested,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   footer?: ReactNode;
   className?: string;
+  nested?: boolean;
 }) {
   return (
-    <div className="modal-backdrop" onClick={onClose} role="presentation">
+    <div
+      className={`modal-backdrop${nested ? " nested" : ""}`}
+      onClick={(e) => {
+        if (nested) e.stopPropagation();
+        onClose();
+      }}
+      role="presentation"
+    >
       <div
         className={`modal${className ? ` ${className}` : ""}`}
         onClick={(e) => e.stopPropagation()}

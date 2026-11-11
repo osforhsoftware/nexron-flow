@@ -11,14 +11,14 @@ Target feature list for **Sale → Sale Invoice** (Vyapar-style), plus current s
 | Invoice list | Show all sale invoices for the company | Done |
 | Date filter | This month / custom date range | UI chip only |
 | Party filter | Filter by customer / all parties | UI chip only |
-| Search | Search by invoice no. / party | Missing |
-| Columns | Date, Invoice No., Party, Tax Amt, Total Amt | Done |
-| Paid / unpaid | Show payment status & balance due | Missing |
+| Search | Search by invoice no. / party | Done |
+| Columns | Date, Invoice No., Party, Transaction, Payment Type, Amount, Balance, Actions | Done |
+| Paid / unpaid | Show payment status & balance due | Partial (cash = received; credit = balance) |
 | Add Sale | Open create invoice editor | Done |
 | Open / edit invoice | Re-open saved invoice | Missing |
-| Delete / cancel | Remove or cancel invoice | Missing |
-| Share from list | WhatsApp / PDF / image | Missing |
-| Print from list | Thermal / regular print | Missing |
+| Delete / cancel | Remove or cancel invoice | Done (delete from Actions menu) |
+| Share from list | WhatsApp / PDF / image | Partial (Web Share / clipboard text) |
+| Print from list | Thermal / regular print | Partial (browser print preview) |
 
 ---
 

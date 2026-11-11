@@ -27,6 +27,10 @@ export function SettingsPage() {
     state: "",
     country: "AE" as CompanyCountry,
     currency: "AED" as CompanyCurrency,
+    logoUrl: "",
+    signatureUrl: "",
+    defaultTerms: "",
+    assetTagStart: "EQ-0001",
   });
   const [saved, setSaved] = useState(false);
   const [section, setSection] = useState("Item");
@@ -50,6 +54,10 @@ export function SettingsPage() {
       state: company.state ?? "",
       country: (company.country === "IN" ? "IN" : "AE") as CompanyCountry,
       currency: (company.currency === "INR" ? "INR" : "AED") as CompanyCurrency,
+      logoUrl: company.logoUrl ?? "",
+      signatureUrl: company.signatureUrl ?? "",
+      defaultTerms: company.defaultTerms ?? "",
+      assetTagStart: company.assetTagStart ?? "EQ-0001",
     });
   }, [company]);
 
@@ -65,6 +73,10 @@ export function SettingsPage() {
       state: form.state.trim() || undefined,
       country: form.country,
       currency: form.currency,
+      logoUrl: form.logoUrl.trim() || null,
+      signatureUrl: form.signatureUrl.trim() || null,
+      defaultTerms: form.defaultTerms.trim() || null,
+      assetTagStart: form.assetTagStart.trim() || "EQ-0001",
     });
     setSaved(true);
     setTimeout(() => setSaved(false), 1800);
@@ -132,6 +144,9 @@ export function SettingsPage() {
               <label className="field">{origin.taxIdLabel}<input value={form.gstin} onChange={(e) => setForm({ ...form, gstin: e.target.value })} /></label>
               <label className="field">{origin.regionLabel}<input value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} /></label>
               <label className="field full">Address<textarea value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></label>
+              <label className="field full">Company logo URL<input value={form.logoUrl} onChange={(e) => setForm({ ...form, logoUrl: e.target.value })} placeholder="https://… or data:image/…" /></label>
+              <label className="field full">Authorized signature URL<input value={form.signatureUrl} onChange={(e) => setForm({ ...form, signatureUrl: e.target.value })} placeholder="https://… or data:image/…" /></label>
+              <label className="field full">Default quotation T&amp;C<textarea rows={4} value={form.defaultTerms} onChange={(e) => setForm({ ...form, defaultTerms: e.target.value })} placeholder="Used when adding Terms on a new quotation" /></label>
             </div>
             <div className="settings-actions"><button className="btn btn-primary" type="submit">Save Profile</button>{saved ? <span className="badge badge-ok">Saved</span> : null}<button className="btn btn-danger" type="button" onClick={resetDemo}>Reset Demo</button></div>
           </form>
@@ -159,6 +174,26 @@ export function SettingsPage() {
               <h3>Batch Tracking</h3>{["Batch No.","Exp Date","Mfg Date","Model No.","Size"].map((label) => <SettingCheck key={label} label={label} checked={false} onChange={() => {}} />)}
             </SettingsColumn>
             <SettingsColumn title="Item Custom Fields"><button className="link-button" type="button" onClick={() => setCustomFields(true)}>Add Custom Fields &gt;</button></SettingsColumn>
+            <SettingsColumn title="Equipment asset tag">
+              <p className="muted" style={{ marginBottom: 8 }}>
+                Starting number. New equipment is assigned the next tag automatically and cannot be edited.
+              </p>
+              <label className="field">
+                Default start
+                <input
+                  value={form.assetTagStart}
+                  onChange={(e) => setForm({ ...form, assetTagStart: e.target.value.toUpperCase() })}
+                  placeholder="NEX-IT-001"
+                />
+              </label>
+              <p className="muted" style={{ marginTop: 6 }}>
+                Example: NEX-IT-001 → next tags NEX-IT-002, NEX-IT-003, NEX-IT-004
+              </p>
+              <button className="btn btn-primary" type="button" onClick={() => void persistProfile()} style={{ marginTop: 10 }}>
+                Save asset tag
+              </button>
+              {saved ? <span className="badge badge-ok" style={{ marginLeft: 8 }}>Saved</span> : null}
+            </SettingsColumn>
           </div>
         ) : section === "Party" ? (
           <div className="item-settings">

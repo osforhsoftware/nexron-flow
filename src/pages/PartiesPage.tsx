@@ -1,52 +1,66 @@
 import type { FormEvent } from "react";
 import { useMemo, useState } from "react";
-import { Plus } from "lucide-react";
+import { ChevronDown, Plus } from "lucide-react";
 import { api } from "../lib/api";
-import type { Party, PartyType } from "../db/types";
+import { PARTY_TYPE_OPTIONS, partyTypeLabel, type Party } from "../db/types";
 import { useApp } from "../lib/AppContext";
 import { money } from "../lib/format";
-import { originOf } from "../lib/companyLocale";
+import { emptyPartyForm, partyPayloadFromForm, partyToForm } from "../lib/partyForm";
 import { partyBalances } from "../lib/reports";
 import { useAsync } from "../lib/useAsync";
 import { Modal } from "../components/Modal";
-
-const emptyForm = {
-  name: "",
-  phone: "",
-  email: "",
-  gstin: "",
-  type: "customer" as PartyType,
-  openingBalance: "0",
-  balanceType: "to_receive" as "to_receive" | "to_pay",
-  address: "",
-};
+import { PartyFormFields } from "../components/PartyFormFields";
+import { TablePagination, usePagedRows } from "../components/TablePagination";
 
 export function PartiesPage() {
   const { company } = useApp();
   const companyId = company?.id;
-  const origin = originOf(company?.country);
   const fmtMoney = (n: number) => money(n, company?.currency);
   const [q, setQ] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
+  const [balanceFilter, setBalanceFilter] = useState<"all" | "to_receive" | "to_pay" | "settled">(
+    "all",
+  );
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Party | null>(null);
-  const [form, setForm] = useState(emptyForm);
+  const [form, setForm] = useState(emptyPartyForm());
 
   const { data: parties, reload } = useAsync(async () => {
     if (!companyId) return [];
     return partyBalances(companyId);
   }, [companyId]);
 
+  const typeOptions = useMemo(() => {
+    const seen = new Set<string>(PARTY_TYPE_OPTIONS.map((o) => o.value));
+    const extras: { value: string; label: string }[] = [];
+    for (const p of parties ?? []) {
+      if (!seen.has(p.type)) {
+        seen.add(p.type);
+        extras.push({ value: p.type, label: partyTypeLabel(p.type, p.typeOther) });
+      }
+    }
+    return [...PARTY_TYPE_OPTIONS, ...extras];
+  }, [parties]);
+
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
-    return (parties ?? []).filter(
-      (p) =>
-        !term ||
+    return (parties ?? []).filter((p) => {
+      if (typeFilter && p.type !== typeFilter) return false;
+      if (balanceFilter === "to_receive" && p.computed <= 0) return false;
+      if (balanceFilter === "to_pay" && p.computed >= 0) return false;
+      if (balanceFilter === "settled" && p.computed !== 0) return false;
+      if (!term) return true;
+      return (
         p.name.toLowerCase().includes(term) ||
         p.phone?.includes(term) ||
-        p.type.includes(term),
-    );
-  }, [parties, q]);
+        p.type.includes(term) ||
+        partyTypeLabel(p.type, p.typeOther).toLowerCase().includes(term)
+      );
+    });
+  }, [parties, q, typeFilter, balanceFilter]);
+
+  const partyPage = usePagedRows(filtered, `${q}|${typeFilter}|${balanceFilter}`);
 
   const selected =
     filtered.find((p) => p.id === selectedId) ?? filtered[0] ?? null;
@@ -60,40 +74,24 @@ export function PartiesPage() {
       .sort((a, b) => b.date.localeCompare(a.date));
   }, [companyId, selectedPartyId]);
 
+  const txnPage = usePagedRows(txns, selectedPartyId ?? "");
+
   function openCreate() {
     setEditing(null);
-    setForm(emptyForm);
+    setForm(emptyPartyForm({ country: company?.country ?? "" }));
     setOpen(true);
   }
 
   function openEdit(p: Party) {
     setEditing(p);
-    setForm({
-      name: p.name,
-      phone: p.phone ?? "",
-      email: p.email ?? "",
-      gstin: p.gstin ?? "",
-      type: p.type,
-      openingBalance: String(p.openingBalance),
-      balanceType: p.balanceType,
-      address: p.address ?? "",
-    });
+    setForm(partyToForm(p));
     setOpen(true);
   }
 
   async function save(e: FormEvent) {
     e.preventDefault();
     if (!companyId) return;
-    const payload = {
-      name: form.name.trim(),
-      phone: form.phone.trim() || undefined,
-      email: form.email.trim() || undefined,
-      gstin: form.gstin.trim() || undefined,
-      type: form.type,
-      openingBalance: Number(form.openingBalance) || 0,
-      balanceType: form.balanceType,
-      address: form.address.trim() || undefined,
-    };
+    const payload = partyPayloadFromForm(form);
     if (editing) {
       await api.parties.update(editing.id, payload);
     } else {
@@ -132,9 +130,39 @@ export function PartiesPage() {
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
               />
+              <div className="party-filter-row">
+                <label className="filter-pill sale-filter-select">
+                  <select
+                    value={typeFilter}
+                    onChange={(e) => setTypeFilter(e.target.value)}
+                    aria-label="Party type filter"
+                  >
+                    <option value="">All Types</option>
+                    {typeOptions.map((opt) => (
+                      <option value={opt.value} key={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown size={13} />
+                </label>
+                <label className="filter-pill sale-filter-select">
+                  <select
+                    value={balanceFilter}
+                    onChange={(e) => setBalanceFilter(e.target.value as typeof balanceFilter)}
+                    aria-label="Balance filter"
+                  >
+                    <option value="all">All Balances</option>
+                    <option value="to_receive">To Receive</option>
+                    <option value="to_pay">To Pay</option>
+                    <option value="settled">Settled</option>
+                  </select>
+                  <ChevronDown size={13} />
+                </label>
+              </div>
             </div>
             <div style={{ overflow: "auto", flex: 1 }}>
-              {filtered.map((p) => (
+              {partyPage.pageRows.map((p) => (
                 <button
                   key={p.id}
                   type="button"
@@ -143,7 +171,7 @@ export function PartiesPage() {
                 >
                   <strong>{p.name}</strong>
                   <div className="meta">
-                    <span>{p.type}</span>
+                    <span>{partyTypeLabel(p.type, p.typeOther)}</span>
                     <span className={`money ${p.computed >= 0 ? "recv" : "pay"}`}>
                       {fmtMoney(Math.abs(p.computed))}
                     </span>
@@ -152,6 +180,7 @@ export function PartiesPage() {
               ))}
               {!filtered.length ? <div className="empty">No parties found</div> : null}
             </div>
+            <TablePagination pager={partyPage} />
           </div>
 
           <div className="party-detail-pane">
@@ -161,7 +190,9 @@ export function PartiesPage() {
                   <div>
                     <h2 style={{ fontSize: 18 }}>{selected.name}</h2>
                     <p className="muted" style={{ marginTop: 4 }}>
-                      {selected.phone || "No phone"} · {selected.type}
+                      {selected.phone || "No phone"} ·{" "}
+                      {partyTypeLabel(selected.type, selected.typeOther)}
+                      {selected.contactPerson ? ` · ${selected.contactPerson}` : ""}
                     </p>
                   </div>
                   <div style={{ textAlign: "right" }}>
@@ -185,6 +216,29 @@ export function PartiesPage() {
                   </div>
                 </div>
 
+                <div className="panel" style={{ marginBottom: 12 }}>
+                  <div className="panel-head">
+                    <h2>Details</h2>
+                  </div>
+                  <div className="party-detail-meta">
+                    {selected.email ? <p>Email: {selected.email}</p> : null}
+                    {selected.city || selected.country ? (
+                      <p>
+                        {[selected.city, selected.country].filter(Boolean).join(", ")}
+                      </p>
+                    ) : null}
+                    {selected.licenseGst || selected.gstin ? (
+                      <p>License / GST: {selected.licenseGst || selected.gstin}</p>
+                    ) : null}
+                    {selected.address ? <p>Address: {selected.address}</p> : null}
+                    {selected.notes ? <p>Note: {selected.notes}</p> : null}
+                    {(selected.additionalFields ?? []).map((f) => (
+                      <p key={f.label}>
+                        {f.label}: {f.value}
+                      </p>
+                    ))}
+                  </div>
+                </div>
                 <div className="panel">
                   <div className="panel-head">
                     <h2>Transactions</h2>
@@ -200,7 +254,7 @@ export function PartiesPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {(txns ?? []).map((t) => (
+                        {txnPage.pageRows.map((t) => (
                           <tr key={t.id}>
                             <td>{t.date}</td>
                             <td>{t.type.replace("_", " ")}</td>
@@ -218,6 +272,7 @@ export function PartiesPage() {
                       </tbody>
                     </table>
                   </div>
+                  <TablePagination pager={txnPage} />
                 </div>
               </>
             ) : (
@@ -230,6 +285,7 @@ export function PartiesPage() {
       {open ? (
         <Modal
           title={editing ? "Edit Party" : "Add Party"}
+          className="modal-party"
           onClose={() => setOpen(false)}
           footer={
             <>
@@ -243,86 +299,7 @@ export function PartiesPage() {
           }
         >
           <form id="party-form" onSubmit={save}>
-            <div className="party-quick-fields">
-            <label className="field">
-              Party Name
-              <input
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                required
-              />
-            </label>
-            <label className="field">
-              {origin.taxIdLabel}
-              <input value={form.gstin} onChange={(e) => setForm({ ...form, gstin: e.target.value })} />
-            </label>
-            <label className="field">
-              Phone
-              <input
-                value={form.phone}
-                onChange={(e) => setForm({ ...form, phone: e.target.value })}
-              />
-            </label>
-            </div>
-            <div className="tabs party-tabs">
-              <button className="tab active" type="button">{origin.code === "AE" ? "VAT" : "GST"} &amp; Address</button>
-              <button className="tab" type="button">Credit &amp; Balance <span className="new-badge">New</span></button>
-              <button className="tab" type="button">Additional Fields</button>
-            </div>
-            <div className="party-modal-body form-grid">
-            <label className="field">
-              {origin.code === "AE" ? "VAT" : "GST"} Type
-              <select
-                value={form.type}
-                onChange={(e) => setForm({ ...form, type: e.target.value as PartyType })}
-              >
-                <option value="customer">Unregistered / Consumer</option>
-                <option value="supplier">Registered Business</option>
-                <option value="both">Both Customer &amp; Supplier</option>
-              </select>
-            </label>
-            <label className="field">
-              Email
-              <input
-                value={form.email}
-                onChange={(e) => setForm({ ...form, email: e.target.value })}
-              />
-            </label>
-            <label className="field">
-              Opening Balance
-              <input
-                type="number"
-                value={form.openingBalance}
-                onChange={(e) => setForm({ ...form, openingBalance: e.target.value })}
-              />
-            </label>
-            <label className="field">
-              Balance Type
-              <select
-                value={form.balanceType}
-                onChange={(e) =>
-                  setForm({
-                    ...form,
-                    balanceType: e.target.value as "to_receive" | "to_pay",
-                  })
-                }
-              >
-                <option value="to_receive">To Receive</option>
-                <option value="to_pay">To Pay</option>
-              </select>
-            </label>
-            <label className="field full">
-              Billing Address
-              <textarea
-                value={form.address}
-                onChange={(e) => setForm({ ...form, address: e.target.value })}
-              />
-            </label>
-            <div className="shipping-address">
-              <strong>Shipping Address</strong>
-              <button className="link-button" type="button">+ Enable Shipping Address</button>
-            </div>
-            </div>
+            <PartyFormFields form={form} onChange={setForm} />
           </form>
         </Modal>
       ) : null}

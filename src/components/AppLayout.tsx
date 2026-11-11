@@ -37,7 +37,16 @@ const navGroups: Array<{
 }> = [
   { label: "Home", icon: Home, to: "/" },
   { label: "Parties", icon: Users, to: "/parties" },
-  { label: "Items", icon: Package, to: "/items" },
+  {
+    label: "Items",
+    icon: Package,
+    to: "/items",
+    children: [
+      { label: "Products", to: "/items/products" },
+      { label: "Services", to: "/items/services" },
+      { label: "Equipment", to: "/items/equipment" },
+    ],
+  },
   {
     label: "Sale",
     icon: ShoppingCart,
@@ -51,13 +60,16 @@ const navGroups: Array<{
     ],
   },
   {
-    label: "Purchase & Expense",
+    label: "Purchase",
     icon: Store,
     to: "/purchases",
     children: [
-      { label: "Purchase Bills", to: "/purchases", create: true },
-      { label: "Purchase Order", to: "/purchases/orders", create: true },
-      { label: "Payment-Out", to: "/payments?create=1" },
+      { label: "Overview", to: "/purchases" },
+      { label: "RFQ", to: "/purchases/rfq", create: true },
+      { label: "PO", to: "/purchases/orders", create: true },
+      { label: "GRN", to: "/purchases/grn", create: true },
+      { label: "Purchase Returns", to: "/purchases/returns", create: true },
+      { label: "Purchase Bills", to: "/purchases/bills", create: true },
     ],
   },
   { label: "Cash & Bank", icon: Wallet, to: "/payments" },
@@ -71,8 +83,9 @@ export function AppLayout() {
   const { company, logout, session, canAccess } = useApp();
   const navigate = useNavigate();
   const location = useLocation();
-  const createMode = new URLSearchParams(location.search).get("create") === "1";
-  const [expanded, setExpanded] = useState<string[]>(["Sale"]);
+  const search = new URLSearchParams(location.search);
+  const createMode = search.get("create") === "1" || Boolean(search.get("txn"));
+  const [expanded, setExpanded] = useState<string[]>(["Sale", "Items", "Purchase"]);
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem(SIDEBAR_KEY) === "1";
@@ -171,15 +184,17 @@ export function AppLayout() {
                         return (
                           <div className="nav-child-row" key={child.to + child.label}>
                             <Link to={child.to}>{child.label}</Link>
-                            <button
-                              type="button"
-                              className="nav-child-add"
-                              title={`Add ${child.label}`}
-                              aria-label={`Add ${child.label}`}
-                              onClick={() => navigate(createTo)}
-                            >
-                              <Plus size={12} />
-                            </button>
+                            {child.create ? (
+                              <button
+                                type="button"
+                                className="nav-child-add"
+                                title={`Add ${child.label}`}
+                                aria-label={`Add ${child.label}`}
+                                onClick={() => navigate(createTo)}
+                              >
+                                <Plus size={12} />
+                              </button>
+                            ) : null}
                           </div>
                         );
                       })}
@@ -234,7 +249,7 @@ export function AppLayout() {
                   </button>
                 ) : null}
                 {showPurchaseQuick ? (
-                  <button className="quick-purchase" type="button" onClick={() => navigate("/purchases?create=1")}>
+                  <button className="quick-purchase" type="button" onClick={() => navigate("/purchases/bills?create=1")}>
                     <Plus size={14} /> Add Purchase
                   </button>
                 ) : null}

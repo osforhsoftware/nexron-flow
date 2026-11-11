@@ -8,6 +8,7 @@ import { useApp } from "../lib/AppContext";
 import { money, todayISO } from "../lib/format";
 import { useAsync } from "../lib/useAsync";
 import { Modal } from "../components/Modal";
+import { TablePagination, usePagedRows } from "../components/TablePagination";
 
 const CASH_VIEWS = [
   {
@@ -119,6 +120,8 @@ export function PaymentsPage() {
     () => (moneyTxns ?? []).filter((t) => t.paymentTypeId && filteredAccountIds.has(t.paymentTypeId)),
     [moneyTxns, filteredAccountIds],
   );
+
+  const listPage = usePagedRows(filteredTxns, view.id);
 
   useEffect(() => {
     setAccountKind(view.defaultKind);
@@ -284,8 +287,8 @@ export function PaymentsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredTxns.length ? (
-                    filteredTxns.slice(0, 20).map((t) => (
+                  {listPage.pageRows.length ? (
+                    listPage.pageRows.map((t) => (
                       <tr key={t.id}>
                         <td>{t.date}</td>
                         <td>{t.number}</td>
@@ -305,6 +308,7 @@ export function PaymentsPage() {
                 </tbody>
               </table>
             </div>
+            <TablePagination pager={listPage} />
           </div>
         </main>
       </div>

@@ -3,17 +3,21 @@ import {
   AlertCircle,
   ArrowLeft,
   CheckCircle2,
-  Download,
   FileSpreadsheet,
   FileText,
   Printer,
-  Search,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useApp } from "../lib/AppContext";
-import { money } from "../lib/format";
+import {
+  downloadExcelTable,
+  downloadTablePdf,
+  printTable,
+} from "../lib/documentExport";
+import { money, todayISO } from "../lib/format";
 import { partyLedger, profitAndLossLite, salesSummary } from "../lib/reports";
 import { useAsync } from "../lib/useAsync";
+import { TablePagination, usePagedRows } from "../components/TablePagination";
 
 const reportGroups = [
   {
@@ -191,9 +195,172 @@ export function ReportsPage() {
     (pnl?.salesTax ?? 0) +
     (pnl?.purchaseTax ?? 0);
 
+  const txnPage = usePagedRows(rows, `${selectedReport}|${selectedPartyId}`);
+  const pnlPage = usePagedRows(pnlRows, pnlView);
+  const gstrPage = usePagedRows(gstrSections, gstrFilter);
+
   function openErrorReview(tab: GstrErrorTab = "total") {
     setErrorTab(tab);
     setErrorReviewOpen(true);
+  }
+
+  function txnReportRows() {
+    return rows.map((row) => [
+      row.date,
+      row.number,
+      statementMode
+        ? parties?.find((p) => p.id === selectedPartyId)?.name || "—"
+        : "Customer",
+      row.type.replace("_", " "),
+      "Cash",
+      fmtMoney(row.grandTotal),
+      fmtMoney("runningBalance" in row ? Number(row.runningBalance) : row.grandTotal),
+    ]);
+  }
+
+  function exportTxnReportExcel() {
+    downloadExcelTable({
+      filename: `${selectedReport.replace(/\s+/g, "-").toLowerCase()}-${todayISO()}`,
+      sheetTitle: selectedReport,
+      columns: ["Date", "Invoice No.", "Party", "Transaction", "Payment", "Amount", "Balance"],
+      rows: rows.map((row) => [
+        row.date,
+        row.number,
+        statementMode
+          ? parties?.find((p) => p.id === selectedPartyId)?.name || ""
+          : "Customer",
+        row.type.replace("_", " "),
+        "Cash",
+        row.grandTotal.toFixed(2),
+        ("runningBalance" in row ? Number(row.runningBalance) : row.grandTotal).toFixed(2),
+      ]),
+    });
+  }
+
+  function downloadTxnReportPdf() {
+    downloadTablePdf({
+      filename: `${selectedReport.replace(/\s+/g, "-").toLowerCase()}-${todayISO()}`,
+      companyName: company?.name || "",
+      title: selectedReport,
+      columns: [
+        { header: "Date", width: 22 },
+        { header: "Invoice No.", width: 28 },
+        { header: "Party" },
+        { header: "Transaction", width: 28 },
+        { header: "Payment", width: 20 },
+        { header: "Amount", align: "right", width: 28 },
+        { header: "Balance", align: "right", width: 28 },
+      ],
+      rows: txnReportRows(),
+    });
+  }
+
+  function printTxnReport() {
+    printTable({
+      companyName: company?.name || "",
+      title: selectedReport,
+      columns: [
+        { header: "Date" },
+        { header: "Invoice No." },
+        { header: "Party" },
+        { header: "Transaction" },
+        { header: "Payment" },
+        { header: "Amount", align: "right" },
+        { header: "Balance", align: "right" },
+      ],
+      rows: txnReportRows(),
+    });
+  }
+
+  function exportPnlExcel() {
+    downloadExcelTable({
+      filename: `profit-and-loss-${todayISO()}`,
+      sheetTitle: "Profit And Loss",
+      metaRows: [
+        ["Company", company?.name || ""],
+        ["From", thisMonth.from],
+        ["To", thisMonth.to],
+        ["Net Profit", netProfit.toFixed(2)],
+      ],
+      columns: ["Particulars", "Amount"],
+      rows: [
+        ...pnlRows.map((row) => [`${"  ".repeat(row.indent)}${row.label}`, row.amount.toFixed(2)]),
+        [pnlView === "ledgerly" ? "Net Profit" : "Net Profit / (Loss)", netProfit.toFixed(2)],
+      ],
+    });
+  }
+
+  function downloadPnlPdf() {
+    downloadTablePdf({
+      filename: `profit-and-loss-${todayISO()}`,
+      companyName: company?.name || "",
+      title: "PROFIT AND LOSS REPORT",
+      subtitle: `${formatDisplayDate(thisMonth.from)} to ${formatDisplayDate(thisMonth.to)}`,
+      columns: [
+        { header: "Particulars" },
+        { header: "Amount", align: "right", width: 40 },
+      ],
+      rows: [
+        ...pnlRows.map((row) => [`${"  ".repeat(row.indent)}${row.label}`, fmtMoney(row.amount)]),
+        [pnlView === "ledgerly" ? "Net Profit" : "Net Profit / (Loss)", fmtMoney(netProfit)],
+      ],
+    });
+  }
+
+  function printPnl() {
+    printTable({
+      companyName: company?.name || "",
+      title: "PROFIT AND LOSS REPORT",
+      subtitle: `${formatDisplayDate(thisMonth.from)} to ${formatDisplayDate(thisMonth.to)}`,
+      columns: [
+        { header: "Particulars" },
+        { header: "Amount", align: "right" },
+      ],
+      rows: [
+        ...pnlRows.map((row) => [`${"  ".repeat(row.indent)}${row.label}`, fmtMoney(row.amount)]),
+        [pnlView === "ledgerly" ? "Net Profit" : "Net Profit / (Loss)", fmtMoney(netProfit)],
+      ],
+    });
+  }
+
+  function exportGstrExcel() {
+    downloadExcelTable({
+      filename: `gstr1-${todayISO()}`,
+      sheetTitle: "GSTR-1",
+      metaRows: [
+        ["Company", company?.name || ""],
+        ["Period", `${dateRange.from} to ${dateRange.to}`],
+      ],
+      columns: ["Section", "Status"],
+      rows: gstrSections.map((section) => [section, "Ready"]),
+    });
+  }
+
+  function downloadGstrPdf() {
+    downloadTablePdf({
+      filename: `gstr1-${todayISO()}`,
+      companyName: company?.name || "",
+      title: "GSTR-1",
+      subtitle: `${formatDisplayDate(dateRange.from)} to ${formatDisplayDate(dateRange.to)}`,
+      columns: [
+        { header: "Section" },
+        { header: "Status", align: "right", width: 40 },
+      ],
+      rows: gstrSections.map((section) => [section, "Ready"]),
+    });
+  }
+
+  function printGstr() {
+    printTable({
+      companyName: company?.name || "",
+      title: "GSTR-1",
+      subtitle: `${formatDisplayDate(dateRange.from)} to ${formatDisplayDate(dateRange.to)}`,
+      columns: [
+        { header: "Section" },
+        { header: "Status", align: "right" },
+      ],
+      rows: gstrSections.map((section) => [section, "Ready"]),
+    });
   }
 
   function renderGenericTransactions() {
@@ -210,9 +377,15 @@ export function ReportsPage() {
           <div className="panel-head">
             <h2>Transactions</h2>
             <div className="report-tools">
-              <Search size={14} />
-              <Download size={14} />
-              <Printer size={14} />
+              <button type="button" className="icon-tool" title="Excel" onClick={exportTxnReportExcel}>
+                <FileSpreadsheet size={14} />
+              </button>
+              <button type="button" className="icon-tool" title="PDF" onClick={downloadTxnReportPdf}>
+                <FileText size={14} />
+              </button>
+              <button type="button" className="icon-tool" title="Print" onClick={printTxnReport}>
+                <Printer size={14} />
+              </button>
             </div>
           </div>
           <div className="table-wrap">
@@ -229,7 +402,7 @@ export function ReportsPage() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
+                {txnPage.pageRows.map((row) => (
                   <tr key={row.id}>
                     <td>{row.date}</td>
                     <td>{row.number}</td>
@@ -256,6 +429,7 @@ export function ReportsPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination pager={txnPage} />
         </div>
       </>
     );
@@ -272,10 +446,13 @@ export function ReportsPage() {
             <strong>{formatDisplayDate(thisMonth.to)}</strong>
           </div>
           <div className="report-tools">
-            <button type="button" title="Excel" className="icon-tool">
+            <button type="button" title="Excel" className="icon-tool" onClick={exportPnlExcel}>
               <FileSpreadsheet size={16} />
             </button>
-            <button type="button" title="Print" className="icon-tool">
+            <button type="button" title="PDF" className="icon-tool" onClick={downloadPnlPdf}>
+              <FileText size={16} />
+            </button>
+            <button type="button" title="Print" className="icon-tool" onClick={printPnl}>
               <Printer size={16} />
             </button>
           </div>
@@ -314,7 +491,7 @@ export function ReportsPage() {
               </tr>
             </thead>
             <tbody>
-              {pnlRows.map((row) => (
+              {pnlPage.pageRows.map((row) => (
                 <tr key={row.label} className={row.bold ? "pnl-group" : undefined}>
                   <td style={{ paddingLeft: `${14 + row.indent * 22}px` }}>{row.label}</td>
                   <td className="money">{fmtMoney(row.amount)}</td>
@@ -329,6 +506,7 @@ export function ReportsPage() {
             </tfoot>
           </table>
         </div>
+        <TablePagination pager={pnlPage} />
       </div>
     );
   }
@@ -367,13 +545,13 @@ export function ReportsPage() {
             </label>
           </div>
           <div className="report-tools">
-            <button type="button" className="icon-tool" title="PDF">
+            <button type="button" className="icon-tool" title="PDF" onClick={downloadGstrPdf}>
               <FileText size={16} />
             </button>
-            <button type="button" className="icon-tool" title="Excel">
+            <button type="button" className="icon-tool" title="Excel" onClick={exportGstrExcel}>
               <FileSpreadsheet size={16} />
             </button>
-            <button type="button" className="icon-tool" title="Print">
+            <button type="button" className="icon-tool" title="Print" onClick={printGstr}>
               <Printer size={16} />
             </button>
           </div>
@@ -432,7 +610,7 @@ export function ReportsPage() {
               </tr>
             </thead>
             <tbody>
-              {gstrSections.map((section) => (
+              {gstrPage.pageRows.map((section) => (
                 <tr key={section}>
                   <td>{section}</td>
                   <td>0</td>
@@ -446,6 +624,7 @@ export function ReportsPage() {
             </tbody>
           </table>
         </div>
+        <TablePagination pager={gstrPage} />
       </div>
     );
   }
