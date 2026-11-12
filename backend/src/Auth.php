@@ -78,16 +78,38 @@ final class Auth
         if (!$user) {
             Response::error('Unauthorized', 401);
         }
-        return $user;
+        return Rbac::enrichUser($pdo, $user);
     }
 
+    /**
+     * Strict permission guard. Super admins (user_type == 1) bypass.
+     * Returns 403 immediately when the session payload lacks the action.
+     */
+    public static function requirePermission(PDO $pdo, array $user, string $directory, string $action): void
+    {
+        if (Rbac::isSuperAdmin($user)) {
+            return;
+        }
+        $permissions = $user['_permissions'] ?? Rbac::permissionsForUser($pdo, $user);
+        if (!Rbac::can($permissions, $directory, $action)) {
+            Response::error('Forbidden', 403);
+        }
+    }
+
+    /**
+     * @deprecated Prefer requirePermission. Kept for transitional callers;
+     * non-super-admins must match the allowlist OR we reject with 403.
+     */
     public static function requireRoles(array $user, array $roles): void
     {
+        if (Rbac::isSuperAdmin($user)) {
+            return;
+        }
         if (($user['role'] ?? '') === 'admin') {
             return;
         }
         if (!in_array($user['role'] ?? '', $roles, true)) {
-            Response::error('Forbidden for this role', 403);
+            Response::error('Forbidden', 403);
         }
     }
 }

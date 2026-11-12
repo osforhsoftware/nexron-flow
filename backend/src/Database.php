@@ -19,17 +19,7 @@ final class Database
         $user = (string) ($db['user'] ?? 'root');
         $pass = (string) ($db['pass'] ?? '');
         $charset = (string) ($db['charset'] ?? 'utf8mb4');
-
-        // Ensure database exists (XAMPP root usually allows this).
-        $serverDsn = sprintf('mysql:host=%s;port=%d;charset=%s', $host, $port, $charset);
-        $server = new PDO($serverDsn, $user, $pass, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        ]);
-        $server->exec(
-            'CREATE DATABASE IF NOT EXISTS `' . str_replace('`', '``', $name) . '`
-             CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
-        );
-        $server = null;
+        $createDb = (bool) ($db['create_database'] ?? true);
 
         $dsn = sprintf(
             'mysql:host=%s;port=%d;dbname=%s;charset=%s',
@@ -38,11 +28,35 @@ final class Database
             $name,
             $charset
         );
-        $pdo = new PDO($dsn, $user, $pass, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            PDO::ATTR_EMULATE_PREPARES => false,
-        ]);
+
+        try {
+            $pdo = new PDO($dsn, $user, $pass, [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_EMULATE_PREPARES => false,
+            ]);
+        } catch (PDOException $e) {
+            // Unknown database: optionally create (XAMPP). Hostinger users must create DB in hPanel.
+            if (!$createDb || stripos($e->getMessage(), 'Unknown database') === false) {
+                throw $e;
+            }
+
+            $serverDsn = sprintf('mysql:host=%s;port=%d;charset=%s', $host, $port, $charset);
+            $server = new PDO($serverDsn, $user, $pass, [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            ]);
+            $server->exec(
+                'CREATE DATABASE IF NOT EXISTS `' . str_replace('`', '``', $name) . '`
+                 CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
+            );
+            $server = null;
+
+            $pdo = new PDO($dsn, $user, $pass, [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_EMULATE_PREPARES => false,
+            ]);
+        }
 
         self::$pdo = $pdo;
         return self::$pdo;

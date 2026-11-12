@@ -1,4 +1,6 @@
+import type { PermissionMap } from "../lib/permissions";
 import type { AppRole } from "../lib/roles";
+import type { CompanySettings } from "../lib/companySettings";
 
 export type PartyType =
   | "not_specified"
@@ -53,6 +55,12 @@ export interface PartyExtraField {
 export type TxnType = "sale" | "purchase" | "payment_in" | "payment_out";
 export type PaymentKind = "cash" | "bank" | "cheque" | "upi" | "loan" | "other";
 
+export interface AssignedRole {
+  id: string;
+  name: string;
+  status: number;
+}
+
 export interface UserSession {
   id: string;
   username: string;
@@ -60,7 +68,11 @@ export interface UserSession {
   name: string;
   email?: string;
   role: AppRole;
+  userType: number;
+  isSuperAdmin: boolean;
   modules: string[];
+  permissions: PermissionMap;
+  roles: AssignedRole[];
   loggedInAt: string;
 }
 
@@ -75,11 +87,15 @@ export interface Company {
   /** Business origin: AE (UAE) or IN (India) */
   country: string;
   currency: string;
+  /** Tax regime for line-item rate dropdowns: GST | VAT */
+  taxType?: string | null;
   logoUrl?: string | null;
   signatureUrl?: string | null;
   defaultTerms?: string | null;
   /** Starting pattern, e.g. NEX-IT-001. Next tags increment: NEX-IT-002… */
   assetTagStart?: string | null;
+  /** Persisted ERP settings (transaction, accounting, print, etc.) */
+  settings?: CompanySettings | null;
   createdAt: string;
 }
 
@@ -202,6 +218,32 @@ export interface Equipment {
   condition?: string | null;
   currentStatus: EquipmentCurrentStatus | string;
   additionalNote?: string | null;
+  createdAt: string;
+  updatedAt?: string | null;
+}
+
+export type ServiceCallStatus = "open" | "assigned" | "in_progress" | "done" | "closed";
+export type ServiceCallType = "Repair" | "Maintenance" | "Installation" | "Other";
+export type ServiceCallPriority = "normal" | "high";
+
+export interface ServiceCall {
+  id: string;
+  companyId: string;
+  callNo: string;
+  customerId: string;
+  customerName: string;
+  equipmentId?: string | null;
+  equipmentName?: string | null;
+  type: ServiceCallType | string;
+  priority: ServiceCallPriority | string;
+  status: ServiceCallStatus | string;
+  description: string;
+  assignedUserId?: string | null;
+  assignedName?: string | null;
+  scheduledFor?: string | null;
+  notes?: string | null;
+  invoiceDocId?: string | null;
+  completedAt?: string | null;
   createdAt: string;
   updatedAt?: string | null;
 }

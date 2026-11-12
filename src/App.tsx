@@ -12,13 +12,17 @@ import { LoginPage } from "./pages/LoginPage";
 import { PartiesPage } from "./pages/PartiesPage";
 import { PaymentsPage } from "./pages/PaymentsPage";
 import { ReportsPage } from "./pages/ReportsPage";
+import { RolesPage } from "./pages/RolesPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { BusinessToolsPage } from "./pages/BusinessToolsPage";
 import { PipelineDocsPage } from "./pages/PipelineDocsPage";
 import { PurchaseFlowPage } from "./pages/PurchaseFlowPage";
 import { PurchaseOverviewPage } from "./pages/PurchaseOverviewPage";
 import { QuotationPage } from "./pages/QuotationPage";
+import { QuickOrderPage } from "./pages/QuickOrderPage";
+import { QrScannerPage } from "./pages/QrScannerPage";
 import { ScanPage } from "./pages/ScanPage";
+import { ServiceCallsPage } from "./pages/ServiceCallsPage";
 
 function Protected({ children }: { children: ReactNode }) {
   const { ready, session } = useApp();
@@ -42,6 +46,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/scan" element={<QrScannerPage />} />
       <Route path="/scan/:kind/:id" element={<ScanPage />} />
       <Route
         path="/"
@@ -57,7 +62,10 @@ export default function App() {
         <Route path="items/products" element={<ItemsPage kind="product" />} />
         <Route path="items/services" element={<ItemsPage kind="service" />} />
         <Route path="items/equipment" element={<EquipmentPage />} />
+        <Route path="service" element={<Navigate to="/service/calls" replace />} />
+        <Route path="service/calls" element={<ServiceCallsPage />} />
         <Route path="sales" element={<InvoicePage type="sale" />} />
+        <Route path="sales/quick" element={<QuickOrderPage />} />
         <Route path="sales/quotations" element={<QuotationPage />} />
         <Route path="sales/orders" element={<PipelineDocsPage docType="sale_order" />} />
         <Route path="sales/delivery" element={<PipelineDocsPage docType="delivery" />} />
@@ -71,8 +79,9 @@ export default function App() {
         <Route path="reports" element={<ReportsPage />} />
         <Route path="companies" element={<CompaniesPage />} />
         <Route path="settings" element={<SettingsPage />} />
-        <Route path="backup" element={<BusinessToolsPage kind="backup" />} />
-        <Route path="utilities" element={<BusinessToolsPage kind="utilities" />} />
+        <Route path="roles" element={<RolesPage />} />
+        <Route path="backup" element={<Navigate to="/utilities" replace />} />
+        <Route path="utilities" element={<BusinessToolsPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

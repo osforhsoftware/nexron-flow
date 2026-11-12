@@ -15,23 +15,32 @@ import {
   Users,
   Wallet,
   Wrench,
+  Zap,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useApp } from "../lib/AppContext";
 import { money } from "../lib/format";
 import { partyBalances, profitAndLossLite, salesSummary } from "../lib/reports";
+import { getMobileHomeProfile, prefersQuickOrder, ROLE_LABELS } from "../lib/roles";
 import { useAsync } from "../lib/useAsync";
 import { TablePagination, usePagedRows } from "../components/TablePagination";
 
 const LOW_STOCK_QTY = 5;
 
 export function DashboardPage() {
-  const { company, canAccess } = useApp();
+  const { company, session, canAccess } = useApp();
   const companyId = company?.id;
   const fmtMoney = (n: number) => money(n, company?.currency);
-  const allowSales = canAccess("sales");
-  const allowPurchases = canAccess("purchases");
+  const allowSales = canAccess("sales") || canAccess("new_invoice");
+  const allowPurchases = canAccess("purchases") || canAccess("purchase_bills");
   const allowItems = canAccess("items");
+  const homeProfile = getMobileHomeProfile(session);
+  const showQuickOrder = prefersQuickOrder(session) && allowSales;
+  const showAdminTools = canAccess("roles") || canAccess("settings") || canAccess("companies") || homeProfile === "admin";
+  const showFinanceDeep =
+    homeProfile === "admin" || homeProfile === "accounts" || homeProfile === "office";
+  const showStockDeep = homeProfile === "admin" || homeProfile === "store" || homeProfile === "office";
+  const roleLabel = session?.role ? ROLE_LABELS[session.role] : null;
 
   const { data, error, loading } = useAsync(async () => {
     if (!companyId) return null;
@@ -146,15 +155,30 @@ export function DashboardPage() {
       <header className="topbar">
         <div>
           <h1>Home</h1>
-          <p className="muted">{company?.name} · business dashboard</p>
+          <p className="muted">
+            {company?.name}
+            {roleLabel ? ` · ${roleLabel}` : ""} ·{" "}
+            {homeProfile === "sales"
+              ? "quick sales workspace"
+              : homeProfile === "store"
+                ? "stock & purchase workspace"
+                : homeProfile === "accounts"
+                  ? "cash & reports workspace"
+                  : "business dashboard"}
+          </p>
         </div>
         <div className="topbar-actions">
-          {canAccess("sales") ? (
-            <Link className="btn btn-primary" to="/sales?create=1">
+          {showQuickOrder ? (
+            <Link className="btn btn-primary" to="/sales/quick">
+              <Zap size={14} /> Quick Order
+            </Link>
+          ) : null}
+          {allowSales ? (
+            <Link className={`btn ${showQuickOrder ? "btn-secondary" : "btn-primary"}`} to="/sales?create=1">
               <Plus size={14} /> Add Sale
             </Link>
           ) : null}
-          {canAccess("purchases") ? (
+          {allowPurchases && homeProfile !== "sales" ? (
             <Link className="btn btn-secondary" to="/purchases/bills?create=1">
               <Plus size={14} /> Add Purchase
             </Link>
@@ -162,11 +186,25 @@ export function DashboardPage() {
         </div>
       </header>
 
-      <div className="content dash-home">
+      <div className={`content dash-home dash-profile-${homeProfile}`}>
         {error ? <div className="empty">{error}</div> : null}
         {loading && !data ? <div className="muted" style={{ padding: "4px 2px" }}>Loading dashboard…</div> : null}
+
+        {showQuickOrder ? (
+          <Link to="/sales/quick" className="dash-quick-order-hero">
+            <span className="dash-quick-order-icon">
+              <Zap size={22} />
+            </span>
+            <span>
+              <strong>Quick Order Entry</strong>
+              <small>Create a cash or credit sale in a few taps</small>
+            </span>
+            <span className="dash-quick-order-cta">Start</span>
+          </Link>
+        ) : null}
+
         <div className="quick-action-grid dash-quick-grid">
-          {canAccess("sales") ? (
+          {allowSales ? (
             <>
               <Link to="/sales?create=1" className="quick-action-card">
                 <FilePlus2 />
@@ -175,30 +213,42 @@ export function DashboardPage() {
                   <small>Create tax invoice</small>
                 </span>
               </Link>
-              <Link to="/sales/quotations?create=1" className="quick-action-card violet">
-                <FileText />
-                <span>
-                  <strong>Quotation</strong>
-                  <small>Estimate / quote</small>
-                </span>
-              </Link>
-              <Link to="/sales/orders?create=1" className="quick-action-card teal">
-                <ClipboardList />
-                <span>
-                  <strong>Sale Order</strong>
-                  <small>Confirm customer order</small>
-                </span>
-              </Link>
-              <Link to="/sales/delivery?create=1" className="quick-action-card slate">
-                <Truck />
-                <span>
-                  <strong>Delivery</strong>
-                  <small>Delivery challan</small>
-                </span>
-              </Link>
+              {homeProfile !== "sales" ? (
+                <>
+                  <Link to="/sales/quotations?create=1" className="quick-action-card violet">
+                    <FileText />
+                    <span>
+                      <strong>Quotation</strong>
+                      <small>Estimate / quote</small>
+                    </span>
+                  </Link>
+                  <Link to="/sales/orders?create=1" className="quick-action-card teal">
+                    <ClipboardList />
+                    <span>
+                      <strong>Sale Order</strong>
+                      <small>Confirm customer order</small>
+                    </span>
+                  </Link>
+                  <Link to="/sales/delivery?create=1" className="quick-action-card slate">
+                    <Truck />
+                    <span>
+                      <strong>Delivery</strong>
+                      <small>Delivery challan</small>
+                    </span>
+                  </Link>
+                </>
+              ) : (
+                <Link to="/parties" className="quick-action-card slate">
+                  <Users />
+                  <span>
+                    <strong>Parties</strong>
+                    <small>{data?.partyCount ?? 0} contacts</small>
+                  </span>
+                </Link>
+              )}
             </>
           ) : null}
-          {canAccess("purchases") ? (
+          {allowPurchases && homeProfile !== "sales" ? (
             <>
               <Link to="/purchases/bills?create=1" className="quick-action-card blue">
                 <ShoppingBag />
@@ -207,13 +257,15 @@ export function DashboardPage() {
                   <small>Record new purchase</small>
                 </span>
               </Link>
-              <Link to="/purchases/rfq?create=1" className="quick-action-card indigo">
-                <FileText />
-                <span>
-                  <strong>RFQ</strong>
-                  <small>Ask suppliers</small>
-                </span>
-              </Link>
+              {homeProfile !== "accounts" ? (
+                <Link to="/purchases/rfq?create=1" className="quick-action-card indigo">
+                  <FileText />
+                  <span>
+                    <strong>RFQ</strong>
+                    <small>Ask suppliers</small>
+                  </span>
+                </Link>
+              ) : null}
             </>
           ) : null}
           {canAccess("payments") ? (
@@ -225,16 +277,18 @@ export function DashboardPage() {
                   <small>Record receipt</small>
                 </span>
               </Link>
-              <Link to="/payments" className="quick-action-card amber">
-                <BanknoteArrowUp />
-                <span>
-                  <strong>Payment Out</strong>
-                  <small>Record expense</small>
-                </span>
-              </Link>
+              {homeProfile !== "sales" ? (
+                <Link to="/payments" className="quick-action-card amber">
+                  <BanknoteArrowUp />
+                  <span>
+                    <strong>Payment Out</strong>
+                    <small>Record expense</small>
+                  </span>
+                </Link>
+              ) : null}
             </>
           ) : null}
-          {canAccess("parties") ? (
+          {canAccess("parties") && homeProfile !== "sales" ? (
             <Link to="/parties" className="quick-action-card slate">
               <Users />
               <span>
@@ -243,7 +297,7 @@ export function DashboardPage() {
               </span>
             </Link>
           ) : null}
-          {canAccess("items") ? (
+          {allowItems && homeProfile !== "sales" && homeProfile !== "accounts" ? (
             <Link to="/items/products" className="quick-action-card teal">
               <Package />
               <span>
@@ -257,62 +311,83 @@ export function DashboardPage() {
         </div>
 
         <div className="stat-row dash-stat-row">
-          <div className="stat">
-            <small>Total Sales</small>
-            <strong>{fmtMoney(data?.summary.salesTotal ?? 0)}</strong>
-            <span className="stat-meta">{data?.summary.salesCount ?? 0} invoices</span>
-          </div>
-          <div className="stat">
-            <small>Total Purchase</small>
-            <strong>{fmtMoney(data?.summary.purchaseTotal ?? 0)}</strong>
-            <span className="stat-meta">{data?.summary.purchaseCount ?? 0} bills</span>
-          </div>
-          <div className="stat">
-            <small>To Receive</small>
-            <strong className="money recv">{fmtMoney(data?.receivable ?? 0)}</strong>
-            <span className="stat-meta">Party receivables</span>
-          </div>
-          <div className="stat">
-            <small>To Pay</small>
-            <strong className="money pay">{fmtMoney(data?.payable ?? 0)}</strong>
-            <span className="stat-meta">Party payables</span>
-          </div>
-          <div className="stat">
-            <small>Stock Value</small>
-            <strong>{fmtMoney(data?.stockValue ?? 0)}</strong>
-            <span className="stat-meta">{data?.productCount ?? 0} products</span>
-          </div>
-          <div className="stat">
-            <small>Cash & Bank</small>
-            <strong>{fmtMoney(data?.cashBalance ?? 0)}</strong>
-            <span className="stat-meta">{data?.accounts.length ?? 0} accounts</span>
-          </div>
-          <div className="stat">
-            <small>This Month Sales</small>
-            <strong className="money recv">{fmtMoney(data?.monthSales ?? 0)}</strong>
-            <span className="stat-meta">vs purchases {fmtMoney(data?.monthPurchases ?? 0)}</span>
-          </div>
-          <div className="stat">
-            <small>Gross Profit (lite)</small>
-            <strong className={data && data.pnl.gross >= 0 ? "money recv" : "money pay"}>
-              {fmtMoney(data?.pnl.gross ?? 0)}
-            </strong>
-            <span className="stat-meta">Sales − purchases (ex tax)</span>
-          </div>
+          {allowSales || homeProfile === "admin" || homeProfile === "accounts" ? (
+            <div className="stat">
+              <small>Total Sales</small>
+              <strong>{fmtMoney(data?.summary.salesTotal ?? 0)}</strong>
+              <span className="stat-meta">{data?.summary.salesCount ?? 0} invoices</span>
+            </div>
+          ) : null}
+          {(allowPurchases || homeProfile === "admin") && homeProfile !== "sales" ? (
+            <div className="stat">
+              <small>Total Purchase</small>
+              <strong>{fmtMoney(data?.summary.purchaseTotal ?? 0)}</strong>
+              <span className="stat-meta">{data?.summary.purchaseCount ?? 0} bills</span>
+            </div>
+          ) : null}
+          {canAccess("parties") || showFinanceDeep ? (
+            <div className="stat">
+              <small>To Receive</small>
+              <strong className="money recv">{fmtMoney(data?.receivable ?? 0)}</strong>
+              <span className="stat-meta">Party receivables</span>
+            </div>
+          ) : null}
+          {showFinanceDeep ? (
+            <div className="stat">
+              <small>To Pay</small>
+              <strong className="money pay">{fmtMoney(data?.payable ?? 0)}</strong>
+              <span className="stat-meta">Party payables</span>
+            </div>
+          ) : null}
+          {showStockDeep && allowItems ? (
+            <div className="stat">
+              <small>Stock Value</small>
+              <strong>{fmtMoney(data?.stockValue ?? 0)}</strong>
+              <span className="stat-meta">{data?.productCount ?? 0} products</span>
+            </div>
+          ) : null}
+          {canAccess("payments") || showFinanceDeep ? (
+            <div className="stat">
+              <small>Cash & Bank</small>
+              <strong>{fmtMoney(data?.cashBalance ?? 0)}</strong>
+              <span className="stat-meta">{data?.accounts.length ?? 0} accounts</span>
+            </div>
+          ) : null}
+          {allowSales || homeProfile === "sales" ? (
+            <div className="stat">
+              <small>This Month Sales</small>
+              <strong className="money recv">{fmtMoney(data?.monthSales ?? 0)}</strong>
+              <span className="stat-meta">
+                {homeProfile === "sales"
+                  ? `${data?.summary.salesCount ?? 0} total invoices`
+                  : `vs purchases ${fmtMoney(data?.monthPurchases ?? 0)}`}
+              </span>
+            </div>
+          ) : null}
+          {showFinanceDeep ? (
+            <div className="stat">
+              <small>Gross Profit (lite)</small>
+              <strong className={data && data.pnl.gross >= 0 ? "money recv" : "money pay"}>
+                {fmtMoney(data?.pnl.gross ?? 0)}
+              </strong>
+              <span className="stat-meta">Sales − purchases (ex tax)</span>
+            </div>
+          ) : null}
         </div>
 
+        {homeProfile !== "sales" ? (
         <div className="dash-split">
           <div className="panel">
             <div className="panel-head">
               <h2>Open pipeline</h2>
-              {canAccess("purchases") ? (
+              {allowPurchases ? (
                 <Link className="btn btn-ghost" to="/purchases">
                   Purchase flow
                 </Link>
               ) : null}
             </div>
             <div className="dash-pipeline">
-              {canAccess("sales") ? (
+              {allowSales ? (
                 <>
                   <Link to="/sales/quotations" className="dash-pipe-card">
                     <strong>{data?.pipeline.quotations ?? 0}</strong>
@@ -328,7 +403,7 @@ export function DashboardPage() {
                   </Link>
                 </>
               ) : null}
-              {canAccess("purchases") ? (
+              {allowPurchases ? (
                 <>
                   <Link to="/purchases/rfq" className="dash-pipe-card">
                     <strong>{data?.pipeline.rfqs ?? 0}</strong>
@@ -344,7 +419,7 @@ export function DashboardPage() {
                   </Link>
                 </>
               ) : null}
-              {canAccess("items") ? (
+              {allowItems && homeProfile !== "accounts" ? (
                 <Link to="/items/equipment" className="dash-pipe-card">
                   <strong>{data?.equipmentCount ?? 0}</strong>
                   <span>Equipment</span>
@@ -353,6 +428,7 @@ export function DashboardPage() {
             </div>
           </div>
 
+          {(canAccess("payments") || showFinanceDeep) ? (
           <div className="panel">
             <div className="panel-head">
               <h2>Cash & bank</h2>
@@ -377,7 +453,9 @@ export function DashboardPage() {
               ) : null}
             </div>
           </div>
+          ) : null}
         </div>
+        ) : null}
 
         <div className="dash-split">
           <div className="panel">
@@ -417,6 +495,7 @@ export function DashboardPage() {
             <TablePagination pager={recvPage} />
           </div>
 
+          {homeProfile !== "sales" ? (
           <div className="panel">
             <div className="panel-head">
               <h2>To pay</h2>
@@ -453,20 +532,21 @@ export function DashboardPage() {
             </div>
             <TablePagination pager={payPage} />
           </div>
+          ) : null}
         </div>
 
+        {homeProfile !== "sales" ? (
         <div className="dash-split">
+          {showStockDeep && allowItems ? (
           <div className="panel">
             <div className="panel-head">
               <h2>
                 <AlertTriangle size={14} style={{ marginRight: 6, verticalAlign: "-2px" }} />
                 Low stock
               </h2>
-              {canAccess("items") ? (
-                <Link className="btn btn-ghost" to="/items/products">
-                  Products
-                </Link>
-              ) : null}
+              <Link className="btn btn-ghost" to="/items/products">
+                Products
+              </Link>
             </div>
             <div className="table-wrap">
               <table className="data">
@@ -499,6 +579,7 @@ export function DashboardPage() {
             </div>
             <TablePagination pager={stockPage} />
           </div>
+          ) : null}
 
           <div className="panel">
             <div className="panel-head">
@@ -515,21 +596,28 @@ export function DashboardPage() {
                   <Wallet size={16} /> Cash & Bank
                 </Link>
               ) : null}
-              {canAccess("items") ? (
+              {allowItems && homeProfile !== "accounts" ? (
                 <Link to="/items/equipment" className="dash-tool-link">
                   <PackageCheck size={16} /> Equipment register
                 </Link>
               ) : null}
-              <Link to="/utilities" className="dash-tool-link">
-                <Wrench size={16} /> Utilities
-              </Link>
-              <Link to="/backup" className="dash-tool-link">
-                <FileText size={16} /> Sync & Backup
-              </Link>
-              <Link to="/settings" className="dash-tool-link">
-                <ClipboardList size={16} /> Settings
-              </Link>
+              {canAccess("utilities") ? (
+                <Link to="/utilities" className="dash-tool-link">
+                  <Wrench size={16} /> Utilities
+                </Link>
+              ) : null}
+              {showAdminTools ? (
+                <Link to="/settings" className="dash-tool-link">
+                  <ClipboardList size={16} /> Settings
+                </Link>
+              ) : null}
+              {canAccess("roles") ? (
+                <Link to="/roles" className="dash-tool-link">
+                  <ClipboardList size={16} /> Roles & access
+                </Link>
+              ) : null}
             </div>
+            {canAccess("payments") || showFinanceDeep ? (
             <div className="dash-money-flow">
               <div>
                 <small>Payment In</small>
@@ -540,8 +628,10 @@ export function DashboardPage() {
                 <strong className="money pay">{fmtMoney(data?.summary.paymentOutTotal ?? 0)}</strong>
               </div>
             </div>
+            ) : null}
           </div>
         </div>
+        ) : null}
 
         <div className="panel">
           <div className="panel-head">

@@ -9,8 +9,10 @@ import type {
   Party,
   PartyServiceType,
   PaymentType,
+  ServiceCall,
   Transaction,
 } from "../db/types";
+import type { PermissionMap } from "./permissions";
 import type { AppRole } from "./roles";
 
 type DocLineInput = {
@@ -60,8 +62,72 @@ export type ApiUser = {
   phone?: string | null;
   email?: string | null;
   role: AppRole;
+  userType?: number;
+  isSuperAdmin?: boolean;
   modules: string[];
+  permissions?: PermissionMap;
+  roles?: { id: string; name: string; status: number }[];
 };
+
+export type ApiSubModule = {
+  id: string;
+  name: string;
+  directory: string;
+  status: number;
+  sortOrder: number;
+};
+
+export type ApiModule = {
+  id: string;
+  name: string;
+  status: number;
+  sortOrder: number;
+  subModules: ApiSubModule[];
+};
+
+export type ApiRoleSummary = {
+  id: string;
+  name: string;
+  status: number;
+  permissionCount: number;
+  userCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ApiRolePermission = {
+  id: string;
+  subModuleId: string;
+  subModuleName: string;
+  directory: string;
+  moduleId: string;
+  moduleName: string;
+  canCreate: boolean;
+  canRead: boolean;
+  canUpdate: boolean;
+  canDelete: boolean;
+};
+
+export type ApiRoleDetail = {
+  id: string;
+  name: string;
+  status: number;
+  createdAt: string;
+  updatedAt: string;
+  permissions: ApiRolePermission[];
+  permissionMatrix: PermissionMap;
+  modules: ApiModule[];
+};
+
+export type RolePermissionInput =
+  | {
+      subModuleId: string;
+      canCreate: boolean;
+      canRead: boolean;
+      canUpdate: boolean;
+      canDelete: boolean;
+    }
+  | PermissionMap;
 
 type TxnWithLines = Transaction & { lineItems?: LineItem[] };
 
@@ -147,6 +213,59 @@ export const api = {
 
   me: () => request<{ user: ApiUser }>("/api/auth/me"),
 
+  modules: {
+    tree: () => request<{ modules: ApiModule[] }>("/api/modules"),
+  },
+
+  roles: {
+    list: () => request<{ roles: ApiRoleSummary[] }>("/api/roles"),
+    get: (id: string) => request<{ role: ApiRoleDetail }>(`/api/roles/${id}`),
+    create: (body: { name: string; status?: number; permissions: RolePermissionInput }) =>
+      request<{ role: ApiRoleDetail }>("/api/roles", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    update: (
+      id: string,
+      body: { name?: string; status?: number; permissions?: RolePermissionInput },
+    ) =>
+      request<{ role: ApiRoleDetail }>(`/api/roles/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }),
+    remove: (id: string) => request<{ ok: boolean }>(`/api/roles/${id}`, { method: "DELETE" }),
+  },
+
+  users: {
+    list: () => request<{ users: ApiUser[] }>("/api/users"),
+    create: (body: {
+      username: string;
+      password: string;
+      name: string;
+      role: AppRole;
+      phone?: string;
+      email?: string;
+      userType?: number;
+    }) =>
+      request<{ user: ApiUser }>("/api/users", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    assignRole: (body: { userId: string; roleId: string }) =>
+      request<{
+        assignment: {
+          id: string;
+          userId: string;
+          roleId: string;
+          assignedBy: string;
+          assignedAt: string;
+        };
+      }>("/api/users/assign-role", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+  },
+
   companies: {
     list: () => request<{ companies: Company[] }>("/api/companies"),
     get: (id: string) => request<{ company: Company }>(`/api/companies/${id}`),
@@ -206,6 +325,30 @@ export const api = {
     },
   },
 
+  serviceCalls: {
+    list: (companyId: string) =>
+      request<{ serviceCalls: ServiceCall[] }>(
+        `/api/service-calls?companyId=${encodeURIComponent(companyId)}`,
+      ),
+    get: (id: string) => request<{ serviceCall: ServiceCall }>(`/api/service-calls/${id}`),
+    create: (
+      body: Partial<ServiceCall> & {
+        companyId: string;
+        customerId: string;
+        description: string;
+      },
+    ) =>
+      request<{ serviceCall: ServiceCall }>("/api/service-calls", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    update: (id: string, body: Partial<ServiceCall>) =>
+      request<{ serviceCall: ServiceCall }>(`/api/service-calls/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+  },
+
   itemCategories: {
     list: (companyId: string) =>
       request<{ categories: ItemCategory[] }>(
@@ -228,6 +371,14 @@ export const api = {
     },
     create: (body: Omit<Item, "id" | "createdAt">) =>
       request<{ item: Item }>("/api/items", { method: "POST", body: JSON.stringify(body) }),
+    bulkCreate: (body: {
+      companyId: string;
+      items: Array<Omit<Item, "id" | "companyId" | "createdAt" | "imageUrl">>;
+    }) =>
+      request<{ created: number; skipped: number; failed: number; errors?: string[] }>(
+        "/api/items/bulk",
+        { method: "POST", body: JSON.stringify(body) },
+      ),
     update: (id: string, body: Partial<Item>) =>
       request<{ item: Item }>(`/api/items/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
     remove: (id: string) =>
@@ -375,11 +526,31 @@ export const api = {
   },
 };
 
+export type ProductScanHistory = {
+  date: string;
+  type: string;
+  number: string;
+  qty: number;
+  rate: number;
+  amount: number;
+  partyName?: string | null;
+};
+
+export type EquipmentScanHistory = {
+  id: string;
+  eventType: string;
+  summary: string;
+  fromValue?: string | null;
+  toValue?: string | null;
+  createdAt: string;
+};
+
 export type ProductScan = {
   kind: "product";
   companyName: string;
   currency: string;
   record: Item;
+  history: ProductScanHistory[];
 };
 
 export type EquipmentScan = {
@@ -387,4 +558,5 @@ export type EquipmentScan = {
   companyName: string;
   currency: string;
   record: Equipment;
+  history: EquipmentScanHistory[];
 };

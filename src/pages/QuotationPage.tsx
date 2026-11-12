@@ -39,7 +39,7 @@ import {
 } from "../lib/documentExport";
 import { lineAmountExTax, money, todayISO } from "../lib/format";
 import { emptyItemForm, itemPayloadFromForm } from "../lib/itemForm";
-import { taxOptionsForCountry } from "../lib/companyLocale";
+import { taxOptionsForCompany } from "../lib/companyLocale";
 import { emptyPartyForm, partyPayloadFromForm } from "../lib/partyForm";
 import { useAsync } from "../lib/useAsync";
 import { TablePagination, usePagedRows } from "../components/TablePagination";
@@ -201,7 +201,7 @@ function csvCell(value: string | number): string {
 export function QuotationPage() {
   const { company, companies, switchCompany } = useApp();
   const companyId = company?.id;
-  const taxOptions = taxOptionsForCountry(company?.country);
+  const taxOptions = taxOptionsForCompany(company);
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const currency = company?.currency ?? "INR";
@@ -786,7 +786,6 @@ export function QuotationPage() {
             ? `${formatDisplayDate(doc.date)}\nValid Until: ${formatDisplayDate(doc.validUntil)}`
             : formatDisplayDate(doc.date),
         },
-        { label: "Status", value: `${doc.status}\nRevision R${doc.revision ?? 1}` },
       ],
       columns: [
         { header: "#", align: "center", width: 12 },
@@ -933,7 +932,7 @@ export function QuotationPage() {
 
   function shareText(doc: CommercialDoc): string {
     const party = (doc.partyId && partyMap.get(doc.partyId)?.name) || "Customer";
-    return `Quotation ${doc.number}\nParty: ${party}\nDate: ${formatDisplayDate(doc.date)}\nValid Until: ${formatDisplayDate(doc.validUntil || "")}\nAmount: ${fmtMoney(doc.grandTotal)}\nStatus: ${doc.status}`;
+    return `Quotation ${doc.number}\nParty: ${party}\nDate: ${formatDisplayDate(doc.date)}\nValid Until: ${formatDisplayDate(doc.validUntil || "")}\nAmount: ${fmtMoney(doc.grandTotal)}`;
   }
 
   async function shareNative(doc: CommercialDoc) {

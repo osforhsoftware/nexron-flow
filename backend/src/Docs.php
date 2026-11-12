@@ -60,7 +60,12 @@ final class Docs
         $this->config = $config;
     }
 
-    public function handle(string $method, string $path): bool
+    
+    private function requireDocPermission(array $user, string $docType, string $action): void
+    {
+        Auth::requirePermission($this->pdo, $user, Rbac::directoryForDocType($docType), $action);
+    }
+public function handle(string $method, string $path): bool
     {
         if ($method === 'GET' && $path === '/api/docs') {
             $this->listDocs();
@@ -113,12 +118,13 @@ final class Docs
 
     private function listDocs(): void
     {
-        Auth::requireUser($this->pdo, $this->config);
+        $user = Auth::requireUser($this->pdo, $this->config);
         $companyId = (string) ($_GET['companyId'] ?? '');
         $docType = (string) ($_GET['type'] ?? '');
         if ($companyId === '' || $docType === '') {
             Response::error('companyId and type required', 400);
         }
+        $this->requireDocPermission($user, $docType, 'read');
         $this->expireOverdue($companyId, $docType);
         $stmt = $this->pdo->prepare(
             'SELECT * FROM docs WHERE company_id = ? AND doc_type = ? ORDER BY date DESC, created_at DESC'
@@ -134,13 +140,14 @@ final class Docs
 
     private function getDoc(string $id): void
     {
-        Auth::requireUser($this->pdo, $this->config);
+        $user = Auth::requireUser($this->pdo, $this->config);
         $stmt = $this->pdo->prepare('SELECT * FROM docs WHERE id = ?');
         $stmt->execute([$id]);
         $row = $stmt->fetch();
         if (!$row) {
             Response::error('Document not found', 404);
         }
+        $this->requireDocPermission($user, (string) $row['doc_type'], 'read');
         if (($row['doc_type'] ?? '') === 'quotation') {
             $this->expireOverdue((string) $row['company_id'], 'quotation', $id);
             $stmt->execute([$id]);
@@ -155,7 +162,6 @@ final class Docs
     private function createDoc(): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'store', 'accounts']);
         $body = Helpers::body();
         $companyId = (string) ($body['companyId'] ?? '');
         $docType = (string) ($body['docType'] ?? '');
@@ -164,6 +170,7 @@ final class Docs
         if ($companyId === '' || $date === '' || !in_array($docType, $allowed, true)) {
             Response::error('Invalid document data', 400);
         }
+        $this->requireDocPermission($user, $docType, 'create');
         $lines = is_array($body['lines'] ?? null) ? $body['lines'] : [];
         if (!$lines) {
             Response::error('Add at least one line', 400);
@@ -202,7 +209,11 @@ final class Docs
     private function updateDoc(string $id): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'store', 'accounts']);
+        $row = $this->pdo->prepare('SELECT * FROM docs WHERE id = ?');
+        $row->execute([$id]);
+        $doc = $row->fetch();
+        if (!$doc) { Response::error('Document not found', 404); }
+        $this->requireDocPermission($user, (string) $doc['doc_type'], 'update');
         $body = Helpers::body();
 
         $stmt = $this->pdo->prepare('SELECT * FROM docs WHERE id = ?');
@@ -298,7 +309,11 @@ final class Docs
     private function deleteDoc(string $id): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'accounts']);
+        $row = $this->pdo->prepare('SELECT * FROM docs WHERE id = ?');
+        $row->execute([$id]);
+        $doc = $row->fetch();
+        if (!$doc) { Response::error('Document not found', 404); }
+        $this->requireDocPermission($user, (string) $doc['doc_type'], 'delete');
 
         $stmt = $this->pdo->prepare('SELECT * FROM docs WHERE id = ?');
         $stmt->execute([$id]);
@@ -333,7 +348,11 @@ final class Docs
     private function cloneDoc(string $id): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'store', 'accounts']);
+        $row = $this->pdo->prepare('SELECT * FROM docs WHERE id = ?');
+        $row->execute([$id]);
+        $doc = $row->fetch();
+        if (!$doc) { Response::error('Document not found', 404); }
+        $this->requireDocPermission($user, (string) $doc['doc_type'], 'create');
 
         $stmt = $this->pdo->prepare('SELECT * FROM docs WHERE id = ?');
         $stmt->execute([$id]);
@@ -402,7 +421,11 @@ final class Docs
     private function updateStatus(string $id): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'store', 'accounts']);
+        $row = $this->pdo->prepare('SELECT * FROM docs WHERE id = ?');
+        $row->execute([$id]);
+        $doc = $row->fetch();
+        if (!$doc) { Response::error('Document not found', 404); }
+        $this->requireDocPermission($user, (string) $doc['doc_type'], 'update');
         $body = Helpers::body();
         $next = strtolower(trim((string) ($body['status'] ?? '')));
 
@@ -482,7 +505,11 @@ final class Docs
     private function convertDoc(string $id): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'store', 'accounts']);
+        $row = $this->pdo->prepare('SELECT * FROM docs WHERE id = ?');
+        $row->execute([$id]);
+        $doc = $row->fetch();
+        if (!$doc) { Response::error('Document not found', 404); }
+        $this->requireDocPermission($user, (string) $doc['doc_type'], 'update');
         $body = Helpers::body();
 
         $stmt = $this->pdo->prepare('SELECT * FROM docs WHERE id = ?');
@@ -575,7 +602,11 @@ final class Docs
     private function revokeConversion(string $id): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'accounts']);
+        $row = $this->pdo->prepare('SELECT * FROM docs WHERE id = ?');
+        $row->execute([$id]);
+        $doc = $row->fetch();
+        if (!$doc) { Response::error('Document not found', 404); }
+        $this->requireDocPermission($user, (string) $doc['doc_type'], 'update');
 
         $stmt = $this->pdo->prepare('SELECT * FROM docs WHERE id = ?');
         $stmt->execute([$id]);
@@ -694,7 +725,11 @@ final class Docs
     private function postStock(string $id): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'store', 'accounts']);
+        $row = $this->pdo->prepare('SELECT * FROM docs WHERE id = ?');
+        $row->execute([$id]);
+        $doc = $row->fetch();
+        if (!$doc) { Response::error('Document not found', 404); }
+        $this->requireDocPermission($user, (string) $doc['doc_type'], 'update');
 
         $stmt = $this->pdo->prepare('SELECT * FROM docs WHERE id = ?');
         $stmt->execute([$id]);

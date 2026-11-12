@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { Camera } from "lucide-react";
 import { api } from "../lib/api";
 import { useApp } from "../lib/AppContext";
-import { taxOptionsForCountry } from "../lib/companyLocale";
+import { taxOptionsForCompany } from "../lib/companyLocale";
 import { emptyItemForm, ITEM_UNITS, type ItemFormState } from "../lib/itemForm";
 import { fileToItemImageDataUrl } from "../lib/itemImage";
 import { useAsync } from "../lib/useAsync";
@@ -33,7 +33,7 @@ export function ItemFormFields({
 }) {
   const { company } = useApp();
   const companyId = company?.id;
-  const taxOptions = taxOptionsForCountry(company?.country);
+  const taxOptions = taxOptionsForCompany(company);
   const [tab, setTab] = useState<EditorTab>(editorTab ?? "pricing");
   const activeTab = editorTab ?? tab;
   const setActiveTab = onEditorTabChange ?? setTab;
@@ -42,7 +42,11 @@ export function ItemFormFields({
   const [imageError, setImageError] = useState("");
   const imageInputRef = useRef<HTMLInputElement>(null);
 
-  const { data: savedCategories, reload: reloadCategories } = useAsync(async () => {
+  const {
+    data: savedCategories,
+    reload: reloadCategories,
+    setData: setSavedCategories,
+  } = useAsync(async () => {
     if (!companyId) return [];
     const { categories: rows } = await api.itemCategories.list(companyId);
     return rows;
@@ -57,6 +61,7 @@ export function ItemFormFields({
   const [newCategory, setNewCategory] = useState("");
   const [savingCategory, setSavingCategory] = useState(false);
   const [categoryPopup, setCategoryPopup] = useState(false);
+  const [localCategories, setLocalCategories] = useState<string[]>([]);
 
   const categories = useMemo(() => {
     const set = new Set<string>();
@@ -68,8 +73,13 @@ export function ItemFormFields({
       const cat = item.category?.trim();
       if (cat) set.add(cat);
     }
+    for (const cat of localCategories) {
+      if (cat) set.add(cat);
+    }
+    const current = form.category.trim();
+    if (current) set.add(current);
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [items, savedCategories]);
+  }, [items, savedCategories, localCategories, form.category]);
 
   useEffect(() => {
     if (editorTab) setTab(editorTab);
@@ -103,14 +113,25 @@ export function ItemFormFields({
   async function addCategory() {
     if (!companyId) return;
     const name = newCategory.trim();
-    if (!name) return;
+    if (!name || savingCategory) return;
     setSavingCategory(true);
     try {
-      const { category } = await api.itemCategories.create({ companyId, name });
-      set("category", category.name);
+      try {
+        const { category } = await api.itemCategories.create({ companyId, name });
+        setSavedCategories((prev) => {
+          const list = prev ?? [];
+          if (list.some((c) => c.id === category.id || c.name === category.name)) return list;
+          return [...list, category];
+        });
+        set("category", category.name);
+        reloadCategories();
+      } catch {
+        // API may reject (e.g. Field read-only catalog) — still attach name to this item.
+        setLocalCategories((prev) => (prev.includes(name) ? prev : [...prev, name]));
+        set("category", name);
+      }
       setNewCategory("");
       setCategoryPopup(false);
-      reloadCategories();
     } finally {
       setSavingCategory(false);
     }

@@ -9,6 +9,7 @@ import {
 } from "react";
 import type { Company, UserSession } from "../db/types";
 import { api, getStoredCompanyId, getToken, setStoredCompanyId, setToken, type ApiUser } from "./api";
+import { anyCan, can, canAccessModule, type PermissionAction } from "./permissions";
 
 interface AppState {
   ready: boolean;
@@ -22,6 +23,8 @@ interface AppState {
   refreshCompanies: () => Promise<void>;
   updateCompany: (patch: Partial<Company> & { id: string }) => Promise<void>;
   canAccess: (module: string) => boolean;
+  can: (directory: string, action: PermissionAction) => boolean;
+  anyCan: (directories: string[], action: PermissionAction) => boolean;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -34,7 +37,11 @@ function toSession(user: ApiUser): UserSession {
     phone: user.phone ?? undefined,
     email: user.email ?? undefined,
     role: user.role,
-    modules: user.modules,
+    userType: user.userType ?? 0,
+    isSuperAdmin: Boolean(user.isSuperAdmin || user.userType === 1 || user.role === "admin"),
+    modules: user.modules ?? [],
+    permissions: user.permissions ?? {},
+    roles: user.roles ?? [],
     loggedInAt: new Date().toISOString(),
   };
 }
@@ -129,11 +136,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const canAccess = useCallback(
-    (module: string) => {
-      if (!session) return false;
-      if (session.role === "admin") return true;
-      return session.modules.includes(module);
-    },
+    (module: string) => canAccessModule(session, module),
+    [session],
+  );
+
+  const canPerm = useCallback(
+    (directory: string, action: PermissionAction) => can(session, directory, action),
+    [session],
+  );
+
+  const anyCanPerm = useCallback(
+    (directories: string[], action: PermissionAction) => anyCan(session, directories, action),
     [session],
   );
 
@@ -150,6 +163,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       refreshCompanies,
       updateCompany,
       canAccess,
+      can: canPerm,
+      anyCan: anyCanPerm,
     }),
     [
       ready,
@@ -163,6 +178,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       refreshCompanies,
       updateCompany,
       canAccess,
+      canPerm,
+      anyCanPerm,
     ],
   );
 

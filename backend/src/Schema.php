@@ -6,6 +6,54 @@ final class Schema
 {
     public static function migrate(PDO $pdo): void
     {
+        // Fast path: after first boot, skip DDL so Hostinger parallel API calls don't race ALTERs.
+        if (self::looksMigrated($pdo)) {
+            return;
+        }
+
+        $gotLock = false;
+        try {
+            $lockStmt = $pdo->query("SELECT GET_LOCK('nexron_schema_migrate', 15)");
+            $gotLock = $lockStmt !== false && (int) $lockStmt->fetchColumn() === 1;
+        } catch (PDOException $e) {
+            $gotLock = false;
+        }
+
+        try {
+            if (self::looksMigrated($pdo)) {
+                return;
+            }
+            self::migrateLocked($pdo);
+        } finally {
+            if ($gotLock) {
+                try {
+                    $pdo->query("SELECT RELEASE_LOCK('nexron_schema_migrate')");
+                } catch (PDOException $e) {
+                    // ignore
+                }
+            }
+        }
+    }
+
+    /** Cheap probe for latest columns added by migrateLocked(). */
+    private static function looksMigrated(PDO $pdo): bool
+    {
+        try {
+            $pdo->query('SELECT user_type FROM users LIMIT 0');
+            $pdo->query('SELECT settings_json FROM companies LIMIT 0');
+            $pdo->query('SELECT stock_effect FROM transactions LIMIT 0');
+            $pdo->query('SELECT stock_posted_at FROM docs LIMIT 0');
+            $pdo->query('SELECT id FROM equipment LIMIT 0');
+            $pdo->query('SELECT id FROM service_calls LIMIT 0');
+            $pdo->query('SELECT id FROM modules LIMIT 0');
+            return true;
+        } catch (PDOException $e) {
+            return false;
+        }
+    }
+
+    private static function migrateLocked(PDO $pdo): void
+    {
         $statements = [
             <<<SQL
 CREATE TABLE IF NOT EXISTS users (
@@ -32,6 +80,7 @@ CREATE TABLE IF NOT EXISTS companies (
   state VARCHAR(80) NULL,
   country VARCHAR(10) NOT NULL DEFAULT 'AE',
   currency VARCHAR(10) NOT NULL DEFAULT 'AED',
+  tax_type VARCHAR(10) NOT NULL DEFAULT 'VAT',
   created_at VARCHAR(40) NOT NULL,
   updated_at VARCHAR(40) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -243,6 +292,115 @@ CREATE TABLE IF NOT EXISTS equipment (
   INDEX idx_equipment_company (company_id, name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 SQL,
+            <<<SQL
+CREATE TABLE IF NOT EXISTS equipment_history (
+  id VARCHAR(64) PRIMARY KEY,
+  equipment_id VARCHAR(64) NOT NULL,
+  event_type VARCHAR(40) NOT NULL,
+  summary VARCHAR(255) NOT NULL,
+  from_value TEXT NULL,
+  to_value TEXT NULL,
+  created_at VARCHAR(40) NOT NULL,
+  INDEX idx_equipment_history_equip (equipment_id, created_at),
+  CONSTRAINT fk_equipment_history_equip FOREIGN KEY (equipment_id) REFERENCES equipment(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+SQL,
+            <<<SQL
+CREATE TABLE IF NOT EXISTS service_calls (
+  id VARCHAR(64) PRIMARY KEY,
+  company_id VARCHAR(64) NOT NULL,
+  call_no VARCHAR(64) NOT NULL,
+  customer_id VARCHAR(64) NOT NULL,
+  customer_name VARCHAR(200) NOT NULL,
+  equipment_id VARCHAR(64) NULL,
+  equipment_name VARCHAR(200) NULL,
+  type VARCHAR(40) NOT NULL DEFAULT 'Repair',
+  priority VARCHAR(20) NOT NULL DEFAULT 'normal',
+  status VARCHAR(40) NOT NULL DEFAULT 'open',
+  description TEXT NOT NULL,
+  assigned_user_id VARCHAR(64) NULL,
+  assigned_name VARCHAR(200) NULL,
+  scheduled_for VARCHAR(40) NULL,
+  notes TEXT NULL,
+  invoice_doc_id VARCHAR(64) NULL,
+  completed_at VARCHAR(40) NULL,
+  created_at VARCHAR(40) NOT NULL,
+  updated_at VARCHAR(40) NOT NULL,
+  CONSTRAINT fk_service_calls_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
+  CONSTRAINT fk_service_calls_customer FOREIGN KEY (customer_id) REFERENCES parties(id) ON DELETE RESTRICT,
+  CONSTRAINT fk_service_calls_equipment FOREIGN KEY (equipment_id) REFERENCES equipment(id) ON DELETE SET NULL,
+  UNIQUE KEY uniq_service_calls_no (company_id, call_no),
+  INDEX idx_service_calls_company (company_id, status, created_at),
+  INDEX idx_service_calls_customer (customer_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+SQL,
+            <<<SQL
+CREATE TABLE IF NOT EXISTS modules (
+  id VARCHAR(64) PRIMARY KEY,
+  name VARCHAR(120) NOT NULL,
+  status TINYINT(1) NOT NULL DEFAULT 1,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at VARCHAR(40) NOT NULL,
+  updated_at VARCHAR(40) NOT NULL,
+  UNIQUE KEY uniq_modules_name (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+SQL,
+            <<<SQL
+CREATE TABLE IF NOT EXISTS sub_modules (
+  id VARCHAR(64) PRIMARY KEY,
+  module_id VARCHAR(64) NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  directory VARCHAR(120) NOT NULL,
+  status TINYINT(1) NOT NULL DEFAULT 1,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at VARCHAR(40) NOT NULL,
+  updated_at VARCHAR(40) NOT NULL,
+  UNIQUE KEY uniq_sub_modules_directory (directory),
+  INDEX idx_sub_modules_module (module_id),
+  CONSTRAINT fk_sub_modules_module FOREIGN KEY (module_id) REFERENCES modules(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+SQL,
+            <<<SQL
+CREATE TABLE IF NOT EXISTS roles (
+  id VARCHAR(64) PRIMARY KEY,
+  name VARCHAR(120) NOT NULL,
+  status TINYINT(1) NOT NULL DEFAULT 1,
+  created_at VARCHAR(40) NOT NULL,
+  updated_at VARCHAR(40) NOT NULL,
+  UNIQUE KEY uniq_roles_name (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+SQL,
+            <<<SQL
+CREATE TABLE IF NOT EXISTS role_permissions (
+  id VARCHAR(64) PRIMARY KEY,
+  role_id VARCHAR(64) NOT NULL,
+  sub_module_id VARCHAR(64) NOT NULL,
+  can_create TINYINT(1) NOT NULL DEFAULT 0,
+  can_read TINYINT(1) NOT NULL DEFAULT 0,
+  can_update TINYINT(1) NOT NULL DEFAULT 0,
+  can_delete TINYINT(1) NOT NULL DEFAULT 0,
+  created_at VARCHAR(40) NOT NULL,
+  UNIQUE KEY uniq_role_sub_module (role_id, sub_module_id),
+  INDEX idx_role_permissions_role (role_id),
+  INDEX idx_role_permissions_sub (sub_module_id),
+  CONSTRAINT fk_role_permissions_role FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
+  CONSTRAINT fk_role_permissions_sub FOREIGN KEY (sub_module_id) REFERENCES sub_modules(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+SQL,
+            <<<SQL
+CREATE TABLE IF NOT EXISTS user_roles (
+  id VARCHAR(64) PRIMARY KEY,
+  user_id VARCHAR(64) NOT NULL,
+  role_id VARCHAR(64) NOT NULL,
+  assigned_by VARCHAR(64) NULL,
+  assigned_at VARCHAR(40) NOT NULL,
+  UNIQUE KEY uniq_user_role (user_id, role_id),
+  INDEX idx_user_roles_user (user_id),
+  INDEX idx_user_roles_role (role_id),
+  CONSTRAINT fk_user_roles_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_user_roles_role FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+SQL,
         ];
 
         foreach ($statements as $sql) {
@@ -254,6 +412,8 @@ SQL,
                 if (
                     stripos($msg, 'already exists') === false
                     && stripos($msg, 'Duplicate') === false
+                    && stripos($msg, 'Lock wait timeout') === false
+                    && stripos($msg, 'Deadlock') === false
                 ) {
                     throw $e;
                 }
@@ -276,10 +436,19 @@ SQL,
         }
 
         self::addColumnIfMissing($pdo, 'companies', 'country', "VARCHAR(10) NOT NULL DEFAULT 'AE' AFTER state");
+        if (self::addColumnIfMissing($pdo, 'companies', 'tax_type', "VARCHAR(10) NOT NULL DEFAULT 'VAT' AFTER currency")) {
+            try {
+                // New column defaults to VAT; align existing Indian companies to GST once.
+                $pdo->exec("UPDATE companies SET tax_type = 'GST' WHERE UPPER(TRIM(IFNULL(country, ''))) = 'IN'");
+            } catch (PDOException $e) {
+                // ignore
+            }
+        }
         self::addColumnIfMissing($pdo, 'companies', 'logo_url', 'TEXT NULL');
         self::addColumnIfMissing($pdo, 'companies', 'signature_url', 'TEXT NULL');
         self::addColumnIfMissing($pdo, 'companies', 'default_terms', 'TEXT NULL');
         self::addColumnIfMissing($pdo, 'companies', 'asset_tag_start', "VARCHAR(64) NULL");
+        self::addColumnIfMissing($pdo, 'companies', 'settings_json', 'LONGTEXT NULL');
 
         self::addColumnIfMissing($pdo, 'items', 'item_type', "VARCHAR(20) NOT NULL DEFAULT 'product'");
         self::addColumnIfMissing($pdo, 'items', 'image_url', 'MEDIUMTEXT NULL');
@@ -309,20 +478,33 @@ SQL,
         } catch (PDOException $e) {
             // ignore
         }
+
+        // RBAC: super-admin flag (1 = bypass all permission checks).
+        self::addColumnIfMissing($pdo, 'users', 'user_type', 'TINYINT NOT NULL DEFAULT 0');
+
+        if (class_exists('Rbac')) {
+            Rbac::ensureCatalog($pdo);
+        }
     }
 
-    private static function addColumnIfMissing(PDO $pdo, string $table, string $column, string $definition): void
+    /** @return bool true when the column was newly added */
+    private static function addColumnIfMissing(PDO $pdo, string $table, string $column, string $definition): bool
     {
         try {
             $pdo->exec("ALTER TABLE {$table} ADD COLUMN {$column} {$definition}");
+            return true;
         } catch (PDOException $e) {
             $msg = $e->getMessage();
             if (
-                stripos($msg, 'Duplicate') === false
-                && stripos($msg, 'exists') === false
+                stripos($msg, 'Duplicate') !== false
+                || stripos($msg, 'exists') !== false
+                || stripos($msg, 'Lock wait timeout') !== false
+                || stripos($msg, 'Deadlock') !== false
+                || stripos($msg, 'try restarting transaction') !== false
             ) {
-                throw $e;
+                return false;
             }
+            throw $e;
         }
     }
 }

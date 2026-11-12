@@ -1,14 +1,15 @@
 import type { ChangeEvent, FormEvent } from "react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Camera, ChevronDown, Eye, Pencil, Plus, QrCode, Settings, X } from "lucide-react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Camera, ChevronDown, Eye, Pencil, Plus, QrCode, ScanLine, Settings, Upload, X } from "lucide-react";
 import { Modal } from "../components/Modal";
 import { QrCodeModal } from "../components/QrCodeModal";
 import { api } from "../lib/api";
 import type { Item } from "../db/types";
 import { useApp } from "../lib/AppContext";
 import { money } from "../lib/format";
-import { taxOptionsForCountry } from "../lib/companyLocale";
+import { taxOptionsForCompany } from "../lib/companyLocale";
 import { fileToItemImageDataUrl } from "../lib/itemImage";
 import { useAsync } from "../lib/useAsync";
 import { TablePagination, usePagedRows } from "../components/TablePagination";
@@ -30,9 +31,11 @@ type ItemKind = "product" | "service";
 
 export function ItemsPage({ kind = "product" }: { kind?: ItemKind }) {
   const { company } = useApp();
+  const navigate = useNavigate();
   const companyId = company?.id;
+  const [searchParams] = useSearchParams();
   const fmtMoney = (n: number) => money(n, company?.currency);
-  const taxOptions = taxOptionsForCountry(company?.country);
+  const taxOptions = taxOptionsForCompany(company);
   const [q, setQ] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("");
   const [stockFilter, setStockFilter] = useState<"all" | "in_stock" | "low_stock" | "out">("all");
@@ -45,6 +48,7 @@ export function ItemsPage({ kind = "product" }: { kind?: ItemKind }) {
   const [imageBusy, setImageBusy] = useState(false);
   const [imageError, setImageError] = useState("");
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const openedFromSearch = useRef<string | null>(null);
 
   const { data: items, reload } = useAsync(async () => {
     if (!companyId) return [];
@@ -52,7 +56,11 @@ export function ItemsPage({ kind = "product" }: { kind?: ItemKind }) {
     return rows;
   }, [companyId, kind]);
 
-  const { data: savedCategories, reload: reloadCategories } = useAsync(async () => {
+  const {
+    data: savedCategories,
+    reload: reloadCategories,
+    setData: setSavedCategories,
+  } = useAsync(async () => {
     if (!companyId) return [];
     const { categories: rows } = await api.itemCategories.list(companyId);
     return rows;
@@ -61,6 +69,7 @@ export function ItemsPage({ kind = "product" }: { kind?: ItemKind }) {
   const [newCategory, setNewCategory] = useState("");
   const [savingCategory, setSavingCategory] = useState(false);
   const [categoryPopup, setCategoryPopup] = useState(false);
+  const [localCategories, setLocalCategories] = useState<string[]>([]);
 
   const categories = useMemo(() => {
     const set = new Set<string>();
@@ -72,8 +81,13 @@ export function ItemsPage({ kind = "product" }: { kind?: ItemKind }) {
       const cat = item.category?.trim();
       if (cat) set.add(cat);
     }
+    for (const cat of localCategories) {
+      if (cat) set.add(cat);
+    }
+    const current = form.category.trim();
+    if (current) set.add(current);
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [items, savedCategories]);
+  }, [items, savedCategories, localCategories, form.category]);
 
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
@@ -127,6 +141,16 @@ export function ItemsPage({ kind = "product" }: { kind?: ItemKind }) {
     setOpen(true);
   }
 
+  useEffect(() => {
+    const id = searchParams.get("id");
+    if (!id || !items?.length) return;
+    if (openedFromSearch.current === id) return;
+    const hit = items.find((i) => i.id === id);
+    if (!hit) return;
+    openedFromSearch.current = id;
+    openView(hit);
+  }, [searchParams, items]);
+
   function openEdit(item: Item) {
     setEditing(item);
     fillForm(item);
@@ -166,14 +190,25 @@ export function ItemsPage({ kind = "product" }: { kind?: ItemKind }) {
   async function addCategory() {
     if (!companyId) return;
     const name = newCategory.trim();
-    if (!name) return;
+    if (!name || savingCategory) return;
     setSavingCategory(true);
     try {
-      const { category } = await api.itemCategories.create({ companyId, name });
-      setForm((prev) => ({ ...prev, category: category.name }));
+      try {
+        const { category } = await api.itemCategories.create({ companyId, name });
+        setSavedCategories((prev) => {
+          const list = prev ?? [];
+          if (list.some((c) => c.id === category.id || c.name === category.name)) return list;
+          return [...list, category];
+        });
+        setForm((prev) => ({ ...prev, category: category.name }));
+        reloadCategories();
+      } catch {
+        // API may reject (e.g. Field read-only catalog) — still attach name to this item.
+        setLocalCategories((prev) => (prev.includes(name) ? prev : [...prev, name]));
+        setForm((prev) => ({ ...prev, category: name }));
+      }
       setNewCategory("");
       setCategoryPopup(false);
-      reloadCategories();
     } finally {
       setSavingCategory(false);
     }
@@ -715,6 +750,18 @@ export function ItemsPage({ kind = "product" }: { kind?: ItemKind }) {
           </p>
         </div>
         <div className="topbar-actions">
+          {kind === "product" ? (
+            <Link className="btn btn-ghost" to="/scan">
+              <ScanLine size={14} /> Scan QR
+            </Link>
+          ) : null}
+          <button
+            className="btn btn-ghost"
+            type="button"
+            onClick={() => navigate("/utilities?import=items")}
+          >
+            <Upload size={14} /> Import
+          </button>
           <button className="btn btn-primary" type="button" onClick={openCreate}>
             <Plus size={14} /> {kind === "service" ? "Add Service" : "Add Item"}
           </button>

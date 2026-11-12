@@ -40,6 +40,20 @@ final class Helpers
         return self::normalizeCountry($country) === 'IN' ? 'INR' : 'AED';
     }
 
+    public static function defaultTaxTypeForCountry(?string $country = null): string
+    {
+        return self::normalizeCountry($country) === 'IN' ? 'GST' : 'VAT';
+    }
+
+    public static function normalizeTaxType(?string $value, ?string $country = null): string
+    {
+        $code = strtoupper(trim((string) $value));
+        if ($code === 'GST' || $code === 'VAT') {
+            return $code;
+        }
+        return self::defaultTaxTypeForCountry($country);
+    }
+
     public static function companyToApi(array $row): array
     {
         $country = self::normalizeCountry($row['country'] ?? 'AE');
@@ -53,12 +67,97 @@ final class Helpers
             'state' => $row['state'] ?: null,
             'country' => $country,
             'currency' => self::normalizeCurrency($row['currency'] ?? null, $country),
+            'taxType' => self::normalizeTaxType($row['tax_type'] ?? null, $country),
             'logoUrl' => ($row['logo_url'] ?? null) ?: null,
             'signatureUrl' => ($row['signature_url'] ?? null) ?: null,
             'defaultTerms' => ($row['default_terms'] ?? null) ?: null,
             'assetTagStart' => ($row['asset_tag_start'] ?? null) ?: 'EQ-0001',
+            'settings' => self::decodeCompanySettings($row['settings_json'] ?? null),
             'createdAt' => $row['created_at'],
         ];
+    }
+
+    /** @return array<string,mixed>|null */
+    public static function decodeCompanySettings(mixed $raw): ?array
+    {
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+        if (is_array($raw)) {
+            return $raw;
+        }
+        $decoded = json_decode((string) $raw, true);
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    /**
+     * Validate and normalize company settings payload (especially accounting).
+     * @param mixed $raw
+     * @return array{ok:bool,settings?:array<string,mixed>,error?:string}
+     */
+    public static function normalizeCompanySettings(mixed $raw): array
+    {
+        if ($raw === null) {
+            return ['ok' => true, 'settings' => null];
+        }
+        if (!is_array($raw)) {
+            return ['ok' => false, 'error' => 'settings must be an object'];
+        }
+
+        if (isset($raw['accounting']) && is_array($raw['accounting'])) {
+            $accounting = $raw['accounting'];
+            $bookDate = trim((string) ($accounting['bookBeginningDate'] ?? ''));
+            if ($bookDate === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $bookDate)) {
+                return ['ok' => false, 'error' => 'Book beginning date is required (YYYY-MM-DD)'];
+            }
+            $fyMonth = (int) ($accounting['fyStartMonth'] ?? 0);
+            $fyDay = (int) ($accounting['fyStartDay'] ?? 0);
+            if ($fyMonth < 1 || $fyMonth > 12) {
+                return ['ok' => false, 'error' => 'Financial year start month is invalid'];
+            }
+            if ($fyDay < 1 || $fyDay > 28) {
+                return ['ok' => false, 'error' => 'Financial year start day is invalid'];
+            }
+
+            $requiredLedgers = [
+                'sales' => 'Sales / Income',
+                'purchase' => 'Purchase / Expense',
+                'salesReturn' => 'Sales Return',
+                'purchaseReturn' => 'Purchase Return',
+                'debtors' => 'Sundry Debtors',
+                'creditors' => 'Sundry Creditors',
+                'taxPayable' => 'Output Tax Payable',
+                'taxReceivable' => 'Input Tax Receivable',
+                'discountAllowed' => 'Discount Allowed',
+                'discountReceived' => 'Discount Received',
+                'roundOff' => 'Round Off',
+                'cash' => 'Cash-in-Hand',
+                'bank' => 'Bank Accounts',
+            ];
+            $ledgers = is_array($accounting['ledgers'] ?? null) ? $accounting['ledgers'] : [];
+            $names = [];
+            foreach ($requiredLedgers as $key => $label) {
+                $value = trim((string) ($ledgers[$key] ?? ''));
+                if ($value === '') {
+                    return ['ok' => false, 'error' => $label . ' ledger mapping is required'];
+                }
+                if (strlen($value) > 120) {
+                    return ['ok' => false, 'error' => $label . ' ledger name is too long'];
+                }
+                $lower = strtolower($value);
+                if (isset($names[$lower])) {
+                    return ['ok' => false, 'error' => 'Ledger mappings must use unique ledger names'];
+                }
+                $names[$lower] = true;
+                $ledgers[$key] = $value;
+            }
+            $raw['accounting']['ledgers'] = $ledgers;
+            $raw['accounting']['bookBeginningDate'] = $bookDate;
+            $raw['accounting']['fyStartMonth'] = $fyMonth;
+            $raw['accounting']['fyStartDay'] = $fyDay;
+        }
+
+        return ['ok' => true, 'settings' => $raw];
     }
 
     /** @return array{prefix:string,width:int,start:int} */
@@ -171,6 +270,53 @@ final class Helpers
             'condition' => ($row['condition'] ?? null) ?: null,
             'currentStatus' => ($row['current_status'] ?? 'in_service') ?: 'in_service',
             'additionalNote' => ($row['additional_note'] ?? null) ?: null,
+            'createdAt' => $row['created_at'],
+            'updatedAt' => $row['updated_at'] ?? null,
+        ];
+    }
+
+    public static function nextServiceCallNo(PDO $pdo, string $companyId): string
+    {
+        $prefix = 'SC-';
+        $stmt = $pdo->prepare('SELECT call_no FROM service_calls WHERE company_id = ?');
+        $stmt->execute([$companyId]);
+        $next = 1001;
+        foreach ($stmt->fetchAll() as $row) {
+            $tag = strtoupper(trim((string) $row['call_no']));
+            if (!str_starts_with($tag, $prefix)) {
+                continue;
+            }
+            $suffix = substr($tag, strlen($prefix));
+            if ($suffix !== '' && ctype_digit($suffix)) {
+                $n = (int) $suffix;
+                if ($n >= $next) {
+                    $next = $n + 1;
+                }
+            }
+        }
+        return $prefix . (string) $next;
+    }
+
+    public static function serviceCallToApi(array $row): array
+    {
+        return [
+            'id' => $row['id'],
+            'companyId' => $row['company_id'],
+            'callNo' => $row['call_no'],
+            'customerId' => $row['customer_id'],
+            'customerName' => $row['customer_name'],
+            'equipmentId' => ($row['equipment_id'] ?? null) ?: null,
+            'equipmentName' => ($row['equipment_name'] ?? null) ?: null,
+            'type' => ($row['type'] ?? 'Repair') ?: 'Repair',
+            'priority' => ($row['priority'] ?? 'normal') ?: 'normal',
+            'status' => ($row['status'] ?? 'open') ?: 'open',
+            'description' => $row['description'] ?? '',
+            'assignedUserId' => ($row['assigned_user_id'] ?? null) ?: null,
+            'assignedName' => ($row['assigned_name'] ?? null) ?: null,
+            'scheduledFor' => ($row['scheduled_for'] ?? null) ?: null,
+            'notes' => ($row['notes'] ?? null) ?: null,
+            'invoiceDocId' => ($row['invoice_doc_id'] ?? null) ?: null,
+            'completedAt' => ($row['completed_at'] ?? null) ?: null,
             'createdAt' => $row['created_at'],
             'updatedAt' => $row['updated_at'] ?? null,
         ];

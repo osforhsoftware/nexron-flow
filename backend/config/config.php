@@ -17,6 +17,8 @@ return [
         'name' => 'ledgerly',
         'user' => 'root',
         'pass' => '', // XAMPP default is empty password
+        // Hostinger: set false (create the DB in hPanel). XAMPP can leave true.
+        'create_database' => true,
         'charset' => 'utf8mb4',
     ],
 

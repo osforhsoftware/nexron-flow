@@ -1,6 +1,7 @@
 import type { FormEvent } from "react";
-import { useMemo, useState } from "react";
-import { Plus, QrCode, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { Plus, QrCode, ScanLine, X } from "lucide-react";
 import { QrCodeModal } from "../components/QrCodeModal";
 import { api } from "../lib/api";
 import type { Equipment } from "../db/types";
@@ -51,6 +52,7 @@ function statusLabel(value?: string | null) {
 export function EquipmentPage() {
   const { company } = useApp();
   const companyId = company?.id;
+  const [searchParams] = useSearchParams();
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Equipment | null>(null);
@@ -60,6 +62,7 @@ export function EquipmentPage() {
   const [addPartyOpen, setAddPartyOpen] = useState(false);
   const [qrItem, setQrItem] = useState<Equipment | null>(null);
   const [newParty, setNewParty] = useState(emptyPartyForm());
+  const openedFromSearch = useRef<string | null>(null);
 
   const { data: rows, reload } = useAsync(async () => {
     if (!companyId) return [];
@@ -124,6 +127,16 @@ export function EquipmentPage() {
     setError("");
     setOpen(true);
   }
+
+  useEffect(() => {
+    const id = searchParams.get("id");
+    if (!id || !rows?.length) return;
+    if (openedFromSearch.current === id) return;
+    const hit = rows.find((e) => e.id === id);
+    if (!hit) return;
+    openedFromSearch.current = id;
+    openEdit(hit);
+  }, [searchParams, rows]);
 
   async function persist(keepOpen: boolean) {
     if (!companyId) return;
@@ -483,6 +496,9 @@ export function EquipmentPage() {
           <p className="muted">Registered machines and serial-tracked assets</p>
         </div>
         <div className="topbar-actions">
+          <Link className="btn btn-ghost" to="/scan">
+            <ScanLine size={14} /> Scan QR
+          </Link>
           <button className="btn btn-primary" type="button" onClick={openCreate}>
             <Plus size={14} /> Register Equipment
           </button>

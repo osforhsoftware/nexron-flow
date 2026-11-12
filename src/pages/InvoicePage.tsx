@@ -43,7 +43,7 @@ import {
 } from "../lib/documentExport";
 import { lineAmountExTax, lineTaxAmount, money, todayISO } from "../lib/format";
 import { emptyItemForm, itemPayloadFromForm } from "../lib/itemForm";
-import { taxOptionsForCountry } from "../lib/companyLocale";
+import { taxOptionsForCompany } from "../lib/companyLocale";
 import { emptyPartyForm, partyPayloadFromForm } from "../lib/partyForm";
 import { useAsync } from "../lib/useAsync";
 
@@ -112,7 +112,7 @@ const SALE_LIST_ROUTES = [
 export function InvoicePage({ type }: { type: "sale" | "purchase" }) {
   const { company, companies, switchCompany } = useApp();
   const companyId = company?.id;
-  const taxOptions = taxOptionsForCountry(company?.country);
+  const taxOptions = taxOptionsForCompany(company);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const viewIndex = Number(searchParams.get("view") || "0") || 0;

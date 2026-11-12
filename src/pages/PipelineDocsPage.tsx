@@ -5,6 +5,11 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowRightLeft, CalendarDays, ChevronDown, Eye, MoreVertical, Plus, Printer, Trash2, Undo2, X } from "lucide-react";
 import { api } from "../lib/api";
 import { useApp } from "../lib/AppContext";
+import {
+  defaultTaxPercentForTaxType,
+  normalizeTaxType,
+  taxOptionsForCompany,
+} from "../lib/companyLocale";
 import { printDocument } from "../lib/documentExport";
 import { inr, todayISO } from "../lib/format";
 import { useAsync } from "../lib/useAsync";
@@ -51,20 +56,24 @@ function monthBounds(offsetMonths = 0) {
   return { from: toIso(start), to: toIso(end) };
 }
 
-function emptyLine(): DraftLine {
+function emptyLine(taxPercent = "5"): DraftLine {
   return {
     key: crypto.randomUUID().slice(0, 8),
     itemId: "",
     name: "",
     qty: "1",
     rate: "0",
-    taxPercent: "18",
+    taxPercent,
   };
 }
 
 export function PipelineDocsPage({ docType }: { docType: PipelineDocType }) {
   const { company, companies, switchCompany } = useApp();
   const companyId = company?.id;
+  const taxOptions = taxOptionsForCompany(company);
+  const defaultTaxPercent = defaultTaxPercentForTaxType(
+    normalizeTaxType(company?.taxType, company?.country),
+  );
   const meta = META[docType];
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -103,7 +112,7 @@ export function PipelineDocsPage({ docType }: { docType: PipelineDocType }) {
   const [partyId, setPartyId] = useState("");
   const [date, setDate] = useState(todayISO());
   const [notes, setNotes] = useState("");
-  const [lines, setLines] = useState<DraftLine[]>([emptyLine()]);
+  const [lines, setLines] = useState<DraftLine[]>(() => [emptyLine(defaultTaxPercent)]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [menuId, setMenuId] = useState<string | null>(null);
@@ -222,7 +231,7 @@ export function PipelineDocsPage({ docType }: { docType: PipelineDocType }) {
   function removeLine(idx: number) {
     setLines((prev) => {
       const next = prev.filter((_, i) => i !== idx);
-      return next.length ? next : [emptyLine()];
+      return next.length ? next : [emptyLine(defaultTaxPercent)];
     });
   }
 
@@ -230,7 +239,7 @@ export function PipelineDocsPage({ docType }: { docType: PipelineDocType }) {
     setPartyId(parties?.[0]?.id ?? "");
     setDate(todayISO());
     setNotes("");
-    setLines([emptyLine()]);
+    setLines([emptyLine(defaultTaxPercent)]);
     setError("");
     setOpen(true);
   }
@@ -351,7 +360,6 @@ export function PipelineDocsPage({ docType }: { docType: PipelineDocType }) {
       meta: [
         { label: "Date", value: doc.date },
         { label: "Party", value: party },
-        { label: "Status", value: String(doc.status) },
       ],
       columns: [
         { header: "Item" },
@@ -997,7 +1005,7 @@ export function PipelineDocsPage({ docType }: { docType: PipelineDocType }) {
                 <button
                   className="btn btn-ghost"
                   type="button"
-                  onClick={() => setLines((prev) => [...prev, emptyLine()])}
+                  onClick={() => setLines((prev) => [...prev, emptyLine(defaultTaxPercent)])}
                 >
                   <Plus size={14} /> Add product
                 </button>
@@ -1082,14 +1090,17 @@ export function PipelineDocsPage({ docType }: { docType: PipelineDocType }) {
                             />
                           </td>
                           <td>
-                            <input
+                            <select
                               aria-label={`Tax percent ${idx + 1}`}
-                              type="number"
-                              min="0"
-                              step="any"
                               value={line.taxPercent}
                               onChange={(e) => updateLine(idx, { taxPercent: e.target.value })}
-                            />
+                            >
+                              {taxOptions.map((opt) => (
+                                <option key={`${opt.value}-${opt.label}`} value={opt.value}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
                           </td>
                           <td className="money">{inr(amount)}</td>
                           <td>

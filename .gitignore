@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Env (VITE_ vars are public in the client bundle; keep local overrides out of git)
+.env
+.env.local
+.env.*.local
+
 # Local SQLite leftover; MySQL data stays on the machine
 backend/storage/*.db
 backend.zip

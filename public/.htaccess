@@ -1,0 +1,12 @@
+RewriteEngine On
+
+# Leave the PHP API alone
+RewriteRule ^mems-backend/ - [L]
+
+# Serve real files and folders as-is
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# React Router SPA fallback
+RewriteRule ^ index.html [L]

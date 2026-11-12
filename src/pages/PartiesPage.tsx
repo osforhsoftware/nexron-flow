@@ -1,5 +1,6 @@
 import type { FormEvent } from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ChevronDown, Plus } from "lucide-react";
 import { api } from "../lib/api";
 import { PARTY_TYPE_OPTIONS, partyTypeLabel, type Party } from "../db/types";
@@ -15,13 +16,19 @@ import { TablePagination, usePagedRows } from "../components/TablePagination";
 export function PartiesPage() {
   const { company } = useApp();
   const companyId = company?.id;
+  const [searchParams] = useSearchParams();
   const fmtMoney = (n: number) => money(n, company?.currency);
   const [q, setQ] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
   const [balanceFilter, setBalanceFilter] = useState<"all" | "to_receive" | "to_pay" | "settled">(
     "all",
   );
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(searchParams.get("id"));
+
+  useEffect(() => {
+    const id = searchParams.get("id");
+    if (id) setSelectedId(id);
+  }, [searchParams]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Party | null>(null);
   const [form, setForm] = useState(emptyPartyForm());

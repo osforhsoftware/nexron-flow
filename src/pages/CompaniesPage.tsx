@@ -11,6 +11,7 @@ import {
   COMPANY_CURRENCIES,
   COMPANY_ORIGINS,
   defaultCurrencyForCountry,
+  defaultTaxTypeForCountry,
   originOf,
   type CompanyCountry,
   type CompanyCurrency,
@@ -62,6 +63,7 @@ export function CompaniesPage() {
         phone: phone.trim(),
         country,
         currency,
+        taxType: defaultTaxTypeForCountry(country),
       });
       await api.payments.createAccount({
         companyId: created.id,

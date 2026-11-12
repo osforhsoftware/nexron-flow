@@ -29,6 +29,11 @@ final class Api
             return;
         }
 
+        $rbac = new ApiRbac($this->pdo, $this->config);
+        if ($rbac->handle($method, $path)) {
+            return;
+        }
+
         if ($method === 'POST' && $path === '/api/auth/login') {
             $this->login();
         }
@@ -94,6 +99,9 @@ final class Api
         if ($method === 'POST' && $path === '/api/items') {
             $this->createItem();
         }
+        if ($method === 'POST' && $path === '/api/items/bulk') {
+            $this->bulkCreateItems();
+        }
         if (preg_match('#^/api/items/([^/]+)$#', $path, $m)) {
             if ($method === 'PATCH') {
                 $this->updateItem($m[1]);
@@ -118,6 +126,21 @@ final class Api
                 Response::error('id required', 400);
             }
             $this->updateEquipment($id);
+        }
+
+        if ($method === 'GET' && $path === '/api/service-calls') {
+            $this->listServiceCalls();
+        }
+        if ($method === 'POST' && $path === '/api/service-calls') {
+            $this->createServiceCall();
+        }
+        if (preg_match('#^/api/service-calls/([^/]+)$#', $path, $m)) {
+            if ($method === 'GET') {
+                $this->getServiceCall($m[1]);
+            }
+            if ($method === 'PATCH') {
+                $this->updateServiceCall($m[1]);
+            }
         }
 
         if ($method === 'GET' && preg_match('#^/api/scan/product/([^/]+)$#', $path, $m)) {
@@ -182,17 +205,33 @@ final class Api
             Response::error('Invalid username or password', 401);
         }
         $token = Auth::sign(
-            ['sub' => $user['id'], 'username' => $user['username'], 'role' => $user['role']],
+            [
+                'sub' => $user['id'],
+                'username' => $user['username'],
+                'role' => $user['role'],
+                'user_type' => (int) ($user['user_type'] ?? 0),
+            ],
             $this->config['jwt_secret'],
             (int) $this->config['jwt_ttl_seconds']
         );
-        Response::json(['token' => $token, 'user' => Roles::publicUser($user)]);
+        Response::json(['token' => $token, 'user' => Roles::publicUserFromPdo($this->pdo, $user)]);
     }
 
     private function me(): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Response::json(['user' => Roles::publicUser($user)]);
+        Response::json(['user' => Roles::publicUserFromPdo($this->pdo, $user)]);
+    }
+
+    /** Map sale/purchase/payment txn types to RBAC directory keys. */
+    private function txnDirectory(string $type): string
+    {
+        return match ($type) {
+            'sale' => 'new_invoice',
+            'purchase' => 'purchase_bills',
+            'payment_in', 'payment_out' => 'payments',
+            default => 'payments',
+        };
     }
 
     private function listCompanies(): void
@@ -217,7 +256,7 @@ final class Api
     private function createCompany(): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office']);
+        Auth::requirePermission($this->pdo, $user, 'companies', 'create');
         $body = Helpers::body();
         $name = trim((string) ($body['name'] ?? ''));
         $phone = trim((string) ($body['phone'] ?? ''));
@@ -228,9 +267,10 @@ final class Api
         $now = Helpers::now();
         $country = Helpers::normalizeCountry($body['country'] ?? null);
         $currency = Helpers::normalizeCurrency($body['currency'] ?? null, $country);
+        $taxType = Helpers::normalizeTaxType($body['taxType'] ?? null, $country);
         $stmt = $this->pdo->prepare(
-            'INSERT INTO companies (id, name, phone, email, gstin, address, state, country, currency, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            'INSERT INTO companies (id, name, phone, email, gstin, address, state, country, currency, tax_type, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         $stmt->execute([
             $id, $name, $phone,
@@ -240,6 +280,7 @@ final class Api
             $this->nullable($body['state'] ?? null),
             $country,
             $currency,
+            $taxType,
             $now, $now,
         ]);
         $this->getCompany($id);
@@ -248,7 +289,7 @@ final class Api
     private function updateCompany(string $id): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'accounts']);
+        Auth::requirePermission($this->pdo, $user, 'companies', 'update');
         $body = Helpers::body();
         if (array_key_exists('country', $body)) {
             $body['country'] = Helpers::normalizeCountry($body['country'] ?? null);
@@ -256,6 +297,15 @@ final class Api
         if (array_key_exists('currency', $body) || array_key_exists('country', $body)) {
             $country = Helpers::normalizeCountry($body['country'] ?? null);
             $body['currency'] = Helpers::normalizeCurrency($body['currency'] ?? null, $country);
+        }
+        if (array_key_exists('taxType', $body) || array_key_exists('country', $body)) {
+            $country = Helpers::normalizeCountry(
+                $body['country'] ?? null
+            );
+            // When only country is sent, keep existing tax_type unless taxType is also provided.
+            if (array_key_exists('taxType', $body)) {
+                $body['taxType'] = Helpers::normalizeTaxType($body['taxType'] ?? null, $country);
+            }
         }
         $fields = [];
         $params = [];
@@ -268,16 +318,25 @@ final class Api
             'state' => 'state',
             'country' => 'country',
             'currency' => 'currency',
+            'taxType' => 'tax_type',
             'logoUrl' => 'logo_url',
             'signatureUrl' => 'signature_url',
             'defaultTerms' => 'default_terms',
             'assetTagStart' => 'asset_tag_start',
+            'settings' => 'settings_json',
         ];
         foreach ($map as $apiKey => $column) {
             if (array_key_exists($apiKey, $body)) {
                 $fields[] = $column . ' = ?';
                 if ($apiKey === 'assetTagStart') {
                     $params[] = Helpers::normalizeAssetTagStart((string) $body[$apiKey]) ?? 'EQ-0001';
+                } elseif ($apiKey === 'settings') {
+                    $normalized = Helpers::normalizeCompanySettings($body['settings']);
+                    if (!$normalized['ok']) {
+                        Response::error((string) ($normalized['error'] ?? 'Invalid settings'), 400);
+                    }
+                    $settings = $normalized['settings'] ?? null;
+                    $params[] = $settings === null ? null : json_encode($settings, JSON_UNESCAPED_UNICODE);
                 } elseif (in_array($apiKey, ['email', 'gstin', 'address', 'state', 'logoUrl', 'signatureUrl', 'defaultTerms'], true)) {
                     $params[] = $this->nullable($body[$apiKey]);
                 } else {
@@ -299,7 +358,8 @@ final class Api
 
     private function listParties(): void
     {
-        Auth::requireUser($this->pdo, $this->config);
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requirePermission($this->pdo, $user, 'parties', 'read');
         $companyId = (string) ($_GET['companyId'] ?? '');
         if ($companyId === '') {
             Response::error('companyId required', 400);
@@ -312,7 +372,7 @@ final class Api
     private function createParty(): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'store', 'accounts']);
+        Auth::requirePermission($this->pdo, $user, 'parties', 'create');
         $body = Helpers::body();
         $companyId = (string) ($body['companyId'] ?? '');
         $name = trim((string) ($body['name'] ?? ''));
@@ -361,7 +421,7 @@ final class Api
     private function updateParty(string $id): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'store', 'accounts']);
+        Auth::requirePermission($this->pdo, $user, 'parties', 'update');
         $body = Helpers::body();
         $map = [
             'name' => 'name',
@@ -425,7 +485,7 @@ final class Api
     private function deleteParty(string $id): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office']);
+        Auth::requirePermission($this->pdo, $user, 'parties', 'delete');
         $stmt = $this->pdo->prepare('DELETE FROM parties WHERE id = ?');
         $stmt->execute([$id]);
         Response::json(['ok' => true]);
@@ -463,7 +523,8 @@ final class Api
 
     private function listPartyTypes(): void
     {
-        Auth::requireUser($this->pdo, $this->config);
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requirePermission($this->pdo, $user, 'parties', 'read');
         $companyId = (string) ($_GET['companyId'] ?? '');
         if ($companyId === '') {
             Response::error('companyId required', 400);
@@ -488,7 +549,7 @@ final class Api
     private function createPartyType(): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'store', 'accounts']);
+        Auth::requirePermission($this->pdo, $user, 'parties', 'create');
         $body = Helpers::body();
         $companyId = (string) ($body['companyId'] ?? '');
         $name = trim((string) ($body['name'] ?? ''));
@@ -523,7 +584,7 @@ final class Api
     private function deletePartyType(string $id): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office']);
+        Auth::requirePermission($this->pdo, $user, 'parties', 'delete');
         $stmt = $this->pdo->prepare('SELECT * FROM party_types WHERE id = ?');
         $stmt->execute([$id]);
         $row = $stmt->fetch();
@@ -539,7 +600,8 @@ final class Api
 
     private function listItemCategories(): void
     {
-        Auth::requireUser($this->pdo, $this->config);
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requirePermission($this->pdo, $user, 'items', 'read');
         $companyId = (string) ($_GET['companyId'] ?? '');
         if ($companyId === '') {
             Response::error('companyId required', 400);
@@ -581,7 +643,8 @@ final class Api
     private function createItemCategory(): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'store']);
+        // Category labels are lightweight taxonomy — allow any user who can view items.
+        Auth::requirePermission($this->pdo, $user, 'items', 'read');
         $body = Helpers::body();
         $companyId = (string) ($body['companyId'] ?? '');
         $name = trim((string) ($body['name'] ?? ''));
@@ -619,7 +682,7 @@ final class Api
     private function deleteItemCategory(string $id): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'store']);
+        Auth::requirePermission($this->pdo, $user, 'items', 'delete');
         $this->pdo->prepare('DELETE FROM item_categories WHERE id = ?')->execute([$id]);
         Response::json(['ok' => true]);
     }
@@ -663,6 +726,7 @@ final class Api
             'companyName' => $meta['companyName'],
             'currency' => $meta['currency'],
             'record' => Helpers::itemToApi($row),
+            'history' => $this->productScanHistory($id),
         ]);
     }
 
@@ -687,12 +751,194 @@ final class Api
             'companyName' => $meta['companyName'],
             'currency' => $meta['currency'],
             'record' => Helpers::equipmentToApi($row),
+            'history' => $this->equipmentScanHistory($id),
         ]);
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function productScanHistory(string $itemId): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT t.date AS txn_date, t.type AS txn_type, t.number AS txn_number,
+                    li.qty, li.rate, li.amount, p.name AS party_name
+             FROM line_items li
+             INNER JOIN transactions t ON t.id = li.transaction_id
+             LEFT JOIN parties p ON p.id = t.party_id
+             WHERE li.item_id = ?
+             ORDER BY t.date DESC, t.created_at DESC
+             LIMIT 50'
+        );
+        $stmt->execute([$itemId]);
+        $out = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $out[] = [
+                'date' => (string) ($row['txn_date'] ?? ''),
+                'type' => (string) ($row['txn_type'] ?? ''),
+                'number' => (string) ($row['txn_number'] ?? ''),
+                'qty' => (float) ($row['qty'] ?? 0),
+                'rate' => (float) ($row['rate'] ?? 0),
+                'amount' => (float) ($row['amount'] ?? 0),
+                'partyName' => ($row['party_name'] ?? null) ?: null,
+            ];
+        }
+        return $out;
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function equipmentScanHistory(string $equipmentId): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT id, event_type, summary, from_value, to_value, created_at
+             FROM equipment_history
+             WHERE equipment_id = ?
+             ORDER BY created_at DESC
+             LIMIT 50'
+        );
+        $stmt->execute([$equipmentId]);
+        $out = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $out[] = [
+                'id' => (string) $row['id'],
+                'eventType' => (string) $row['event_type'],
+                'summary' => (string) $row['summary'],
+                'fromValue' => ($row['from_value'] ?? null) !== null && $row['from_value'] !== ''
+                    ? (string) $row['from_value']
+                    : null,
+                'toValue' => ($row['to_value'] ?? null) !== null && $row['to_value'] !== ''
+                    ? (string) $row['to_value']
+                    : null,
+                'createdAt' => (string) $row['created_at'],
+            ];
+        }
+        return $out;
+    }
+
+    private function insertEquipmentHistory(
+        string $equipmentId,
+        string $eventType,
+        string $summary,
+        ?string $fromValue = null,
+        ?string $toValue = null
+    ): void {
+        $this->pdo->prepare(
+            'INSERT INTO equipment_history (id, equipment_id, event_type, summary, from_value, to_value, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)'
+        )->execute([
+            Helpers::cuid('eqh'),
+            $equipmentId,
+            $eventType,
+            $summary,
+            $fromValue,
+            $toValue,
+            Helpers::now(),
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $before
+     * @param array<string, mixed> $body
+     */
+    private function logEquipmentUpdates(string $equipmentId, array $before, array $body): void
+    {
+        $labels = [
+            'currentStatus' => 'Status',
+            'location' => 'Location',
+            'customerId' => 'Customer',
+            'condition' => 'Condition',
+            'name' => 'Name',
+            'serialNumber' => 'Serial',
+            'model' => 'Model',
+            'manufacturer' => 'Manufacturer',
+            'category' => 'Category',
+            'installDate' => 'Install date',
+            'warrantyStart' => 'Machine warranty start',
+            'warrantyEnd' => 'Machine warranty end',
+            'noMachineWarranty' => 'Machine warranty',
+            'serviceWarrantyStart' => 'Service warranty start',
+            'serviceWarrantyEnd' => 'Service warranty end',
+            'noServiceWarranty' => 'Service warranty',
+            'additionalNote' => 'Note',
+        ];
+        $columns = [
+            'currentStatus' => 'current_status',
+            'location' => 'location',
+            'customerId' => 'customer_id',
+            'condition' => 'condition',
+            'name' => 'name',
+            'serialNumber' => 'serial_number',
+            'model' => 'model',
+            'manufacturer' => 'manufacturer',
+            'category' => 'category',
+            'installDate' => 'install_date',
+            'warrantyStart' => 'warranty_start',
+            'warrantyEnd' => 'warranty_end',
+            'noMachineWarranty' => 'no_machine_warranty',
+            'serviceWarrantyStart' => 'service_warranty_start',
+            'serviceWarrantyEnd' => 'service_warranty_end',
+            'noServiceWarranty' => 'no_service_warranty',
+            'additionalNote' => 'additional_note',
+        ];
+
+        foreach ($columns as $api => $col) {
+            if (!array_key_exists($api, $body)) {
+                continue;
+            }
+            $oldRaw = $before[$col] ?? null;
+            if (in_array($api, ['noMachineWarranty', 'noServiceWarranty'], true)) {
+                $oldVal = ((int) $oldRaw) ? '1' : '0';
+                $newVal = $this->boolVal($body[$api]) ? '1' : '0';
+                $oldDisplay = $oldVal === '1' ? 'Off' : 'On';
+                $newDisplay = $newVal === '1' ? 'Off' : 'On';
+            } elseif ($api === 'currentStatus') {
+                $oldVal = strtolower(trim((string) ($oldRaw ?? '')));
+                $newVal = $this->normalizeStatus($body[$api]);
+                $oldDisplay = $oldVal !== '' ? $oldVal : '—';
+                $newDisplay = $newVal;
+            } elseif ($api === 'name' || $api === 'serialNumber') {
+                $oldVal = trim((string) ($oldRaw ?? ''));
+                $newVal = trim((string) $body[$api]);
+                $oldDisplay = $oldVal !== '' ? $oldVal : '—';
+                $newDisplay = $newVal !== '' ? $newVal : '—';
+            } else {
+                $oldVal = $oldRaw !== null && $oldRaw !== '' ? (string) $oldRaw : '';
+                $nullable = $this->nullable($body[$api]);
+                $newVal = $nullable !== null ? (string) $nullable : '';
+                $oldDisplay = $oldVal !== '' ? $oldVal : '—';
+                $newDisplay = $newVal !== '' ? $newVal : '—';
+            }
+            if ($oldVal === $newVal) {
+                continue;
+            }
+            if ($api === 'customerId') {
+                $oldDisplay = $this->partyNameById($oldVal !== '' ? $oldVal : null) ?? '—';
+                $newDisplay = $this->partyNameById($newVal !== '' ? $newVal : null) ?? '—';
+            }
+            $label = $labels[$api] ?? $api;
+            $this->insertEquipmentHistory(
+                $equipmentId,
+                $api === 'currentStatus' ? 'status_change' : 'field_change',
+                $label . ' updated',
+                $oldDisplay,
+                $newDisplay
+            );
+        }
+    }
+
+    private function partyNameById(?string $id): ?string
+    {
+        if ($id === null || $id === '') {
+            return null;
+        }
+        $stmt = $this->pdo->prepare('SELECT name FROM parties WHERE id = ? LIMIT 1');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        return $row ? (string) $row['name'] : null;
     }
 
     private function listItems(): void
     {
-        Auth::requireUser($this->pdo, $this->config);
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requirePermission($this->pdo, $user, 'items', 'read');
         $companyId = (string) ($_GET['companyId'] ?? '');
         if ($companyId === '') {
             Response::error('companyId required', 400);
@@ -711,7 +957,7 @@ final class Api
     private function createItem(): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'store']);
+        Auth::requirePermission($this->pdo, $user, 'items', 'create');
         $body = Helpers::body();
         $companyId = (string) ($body['companyId'] ?? '');
         $name = trim((string) ($body['name'] ?? ''));
@@ -743,10 +989,102 @@ final class Api
         Response::json(['item' => Helpers::itemToApi($stmt->fetch())], 201);
     }
 
+    private function bulkCreateItems(): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requirePermission($this->pdo, $user, 'items', 'create');
+        $body = Helpers::body();
+        $companyId = (string) ($body['companyId'] ?? '');
+        $items = $body['items'] ?? [];
+        if ($companyId === '' || !is_array($items)) {
+            Response::error('companyId and items[] required', 400);
+        }
+        if (count($items) > 2000) {
+            Response::error('Import is limited to 2000 rows', 400);
+        }
+        $created = 0;
+        $skipped = 0;
+        $failed = 0;
+        $errors = [];
+        $now = Helpers::now();
+        $stmt = $this->pdo->prepare(
+            'INSERT INTO items (id, company_id, name, sku, unit, sale_price, purchase_price, stock_qty, tax_percent, category, item_type, image_url, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        $this->pdo->beginTransaction();
+        try {
+            foreach ($items as $index => $raw) {
+                if (!is_array($raw)) {
+                    $failed += 1;
+                    $errors[] = 'Row ' . ((int) $index + 1) . ': invalid item';
+                    continue;
+                }
+                $name = trim((string) ($raw['name'] ?? ''));
+                if ($name === '') {
+                    $skipped += 1;
+                    continue;
+                }
+                if (strlen($name) < 2) {
+                    $failed += 1;
+                    $errors[] = 'Row ' . ((int) $index + 1) . ': name must be at least 2 characters';
+                    continue;
+                }
+                $nums = [
+                    'salePrice' => $raw['salePrice'] ?? 0,
+                    'purchasePrice' => $raw['purchasePrice'] ?? 0,
+                    'stockQty' => $raw['stockQty'] ?? 0,
+                    'taxPercent' => $raw['taxPercent'] ?? 18,
+                ];
+                $invalid = false;
+                foreach ($nums as $label => $value) {
+                    $n = (float) $value;
+                    if ($n < 0) {
+                        $failed += 1;
+                        $errors[] = 'Row ' . ((int) $index + 1) . ': ' . $label . ' must be >= 0';
+                        $invalid = true;
+                        break;
+                    }
+                }
+                if ($invalid) {
+                    continue;
+                }
+                $itemType = strtolower(trim((string) ($raw['itemType'] ?? 'product'))) === 'service' ? 'service' : 'product';
+                $stockQty = $itemType === 'service' ? 0 : (float) ($raw['stockQty'] ?? 0);
+                $stmt->execute([
+                    Helpers::cuid('itm'),
+                    $companyId,
+                    $name,
+                    $this->nullable($raw['sku'] ?? null),
+                    trim((string) ($raw['unit'] ?? 'pcs')) ?: 'pcs',
+                    (float) ($raw['salePrice'] ?? 0),
+                    (float) ($raw['purchasePrice'] ?? 0),
+                    $stockQty,
+                    (float) ($raw['taxPercent'] ?? 18),
+                    $this->nullable($raw['category'] ?? null),
+                    $itemType,
+                    $this->nullable($raw['imageUrl'] ?? null),
+                    $now,
+                    $now,
+                ]);
+                $created += 1;
+            }
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            $this->pdo->rollBack();
+            Response::error('Bulk import failed', 500);
+        }
+        Response::json([
+            'created' => $created,
+            'skipped' => $skipped,
+            'failed' => $failed,
+            'errors' => $errors,
+        ]);
+    }
+
     private function updateItem(string $id): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'store']);
+        Auth::requirePermission($this->pdo, $user, 'items', 'update');
         $body = Helpers::body();
         $map = [
             'name' => 'name',
@@ -796,14 +1134,15 @@ final class Api
     private function deleteItem(string $id): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'store']);
+        Auth::requirePermission($this->pdo, $user, 'items', 'delete');
         $this->pdo->prepare('DELETE FROM items WHERE id = ?')->execute([$id]);
         Response::json(['ok' => true]);
     }
 
     private function listEquipment(): void
     {
-        Auth::requireUser($this->pdo, $this->config);
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requirePermission($this->pdo, $user, 'equipment', 'read');
         $companyId = (string) ($_GET['companyId'] ?? '');
         if ($companyId === '') {
             Response::error('companyId required', 400);
@@ -822,7 +1161,7 @@ final class Api
     private function createEquipment(): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'store']);
+        Auth::requirePermission($this->pdo, $user, 'equipment', 'create');
         $body = Helpers::body();
         $companyId = (string) ($body['companyId'] ?? $_GET['companyId'] ?? '');
         $name = trim((string) ($body['name'] ?? ''));
@@ -884,13 +1223,14 @@ final class Api
             }
             throw $e;
         }
+        $this->insertEquipmentHistory($id, 'created', 'Equipment registered', null, $name . ' · ' . $serial);
         Response::json(['equipment' => $this->fetchEquipment($id)], 201);
     }
 
     private function updateEquipment(string $id): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'store']);
+        Auth::requirePermission($this->pdo, $user, 'equipment', 'update');
         $body = Helpers::body();
         $existing = $this->pdo->prepare('SELECT * FROM equipment WHERE id = ?');
         $existing->execute([$id]);
@@ -970,6 +1310,7 @@ final class Api
             }
             throw $e;
         }
+        $this->logEquipmentUpdates($id, $row, $body);
         Response::json(['equipment' => $this->fetchEquipment($id)]);
     }
 
@@ -1014,9 +1355,303 @@ final class Api
         return $value === true || $value === 1 || $value === '1' || $value === 'true';
     }
 
+    private function listServiceCalls(): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requirePermission($this->pdo, $user, 'service_calls', 'read');
+        $companyId = (string) ($_GET['companyId'] ?? '');
+        if ($companyId === '') {
+            Response::error('companyId required', 400);
+        }
+        $stmt = $this->pdo->prepare(
+            'SELECT * FROM service_calls WHERE company_id = ? ORDER BY created_at DESC'
+        );
+        $stmt->execute([$companyId]);
+        Response::json(['serviceCalls' => array_map([Helpers::class, 'serviceCallToApi'], $stmt->fetchAll())]);
+    }
+
+    private function getServiceCall(string $id): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requirePermission($this->pdo, $user, 'service_calls', 'read');
+        Response::json(['serviceCall' => $this->fetchServiceCall($id)]);
+    }
+
+    private function createServiceCall(): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requirePermission($this->pdo, $user, 'service_calls', 'create');
+        $body = Helpers::body();
+        $companyId = (string) ($body['companyId'] ?? $_GET['companyId'] ?? '');
+        $customerId = trim((string) ($body['customerId'] ?? ''));
+        $description = trim((string) ($body['description'] ?? ''));
+        if ($companyId === '' || $customerId === '' || $description === '') {
+            Response::error('customerId and description are required', 400);
+        }
+        $customer = $this->pdo->prepare('SELECT id, name FROM parties WHERE id = ? AND company_id = ? LIMIT 1');
+        $customer->execute([$customerId, $companyId]);
+        $customerRow = $customer->fetch();
+        if (!$customerRow) {
+            Response::error('Customer not found', 404);
+        }
+
+        $equipmentId = $this->nullable($body['equipmentId'] ?? null);
+        $equipmentName = $this->nullable($body['equipmentName'] ?? null);
+        if ($equipmentId) {
+            $eq = $this->pdo->prepare(
+                'SELECT id, name, asset_tag, serial_number FROM equipment WHERE id = ? AND company_id = ? LIMIT 1'
+            );
+            $eq->execute([$equipmentId, $companyId]);
+            $eqRow = $eq->fetch();
+            if (!$eqRow) {
+                Response::error('Equipment not found', 404);
+            }
+            if (!$equipmentName) {
+                $equipmentName = trim((string) $eqRow['name']);
+                if (!empty($eqRow['asset_tag'])) {
+                    $equipmentName .= ' · ' . $eqRow['asset_tag'];
+                }
+            }
+        }
+
+        $assignedUserId = $this->nullable($body['assignedUserId'] ?? null);
+        $assignedName = $this->nullable($body['assignedName'] ?? null);
+        if ($assignedUserId && !$assignedName) {
+            $u = $this->pdo->prepare('SELECT name FROM users WHERE id = ? LIMIT 1');
+            $u->execute([$assignedUserId]);
+            $uRow = $u->fetch();
+            if ($uRow) {
+                $assignedName = $uRow['name'];
+            }
+        }
+
+        $status = $this->normalizeServiceCallStatus($body['status'] ?? 'open');
+        if ($status === 'open' && ($assignedUserId || $assignedName)) {
+            $status = 'assigned';
+        }
+
+        $id = Helpers::cuid('scall');
+        $now = Helpers::now();
+        $callNo = Helpers::nextServiceCallNo($this->pdo, $companyId);
+        $type = $this->normalizeServiceCallType($body['type'] ?? 'Repair');
+        $priority = $this->normalizeServiceCallPriority($body['priority'] ?? 'normal');
+        $completedAt = in_array($status, ['done', 'closed'], true) ? $now : null;
+
+        $this->pdo->prepare(
+            'INSERT INTO service_calls (
+                id, company_id, call_no, customer_id, customer_name, equipment_id, equipment_name,
+                type, priority, status, description, assigned_user_id, assigned_name, scheduled_for,
+                notes, invoice_doc_id, completed_at, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        )->execute([
+            $id,
+            $companyId,
+            $callNo,
+            $customerId,
+            $customerRow['name'],
+            $equipmentId,
+            $equipmentName,
+            $type,
+            $priority,
+            $status,
+            $description,
+            $assignedUserId,
+            $assignedName,
+            $this->nullable($body['scheduledFor'] ?? null),
+            $this->nullable($body['notes'] ?? null),
+            $this->nullable($body['invoiceDocId'] ?? null),
+            $completedAt,
+            $now,
+            $now,
+        ]);
+
+        Response::json(['serviceCall' => $this->fetchServiceCall($id)], 201);
+    }
+
+    private function updateServiceCall(string $id): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requirePermission($this->pdo, $user, 'service_calls', 'update');
+        $body = Helpers::body();
+        $existing = $this->pdo->prepare('SELECT * FROM service_calls WHERE id = ?');
+        $existing->execute([$id]);
+        $row = $existing->fetch();
+        if (!$row) {
+            Response::error('Service call not found', 404);
+        }
+        $companyId = (string) $row['company_id'];
+        $fields = [];
+        $params = [];
+
+        if (array_key_exists('customerId', $body)) {
+            $customerId = trim((string) $body['customerId']);
+            if ($customerId === '') {
+                Response::error('customerId is required', 400);
+            }
+            $customer = $this->pdo->prepare('SELECT id, name FROM parties WHERE id = ? AND company_id = ? LIMIT 1');
+            $customer->execute([$customerId, $companyId]);
+            $customerRow = $customer->fetch();
+            if (!$customerRow) {
+                Response::error('Customer not found', 404);
+            }
+            $fields[] = 'customer_id = ?';
+            $params[] = $customerId;
+            $fields[] = 'customer_name = ?';
+            $params[] = $customerRow['name'];
+        }
+
+        if (array_key_exists('equipmentId', $body)) {
+            $equipmentId = $this->nullable($body['equipmentId']);
+            $equipmentName = $this->nullable($body['equipmentName'] ?? null);
+            if ($equipmentId) {
+                $eq = $this->pdo->prepare(
+                    'SELECT id, name, asset_tag FROM equipment WHERE id = ? AND company_id = ? LIMIT 1'
+                );
+                $eq->execute([$equipmentId, $companyId]);
+                $eqRow = $eq->fetch();
+                if (!$eqRow) {
+                    Response::error('Equipment not found', 404);
+                }
+                if (!$equipmentName) {
+                    $equipmentName = trim((string) $eqRow['name']);
+                    if (!empty($eqRow['asset_tag'])) {
+                        $equipmentName .= ' · ' . $eqRow['asset_tag'];
+                    }
+                }
+            } else {
+                $equipmentName = null;
+            }
+            $fields[] = 'equipment_id = ?';
+            $params[] = $equipmentId;
+            $fields[] = 'equipment_name = ?';
+            $params[] = $equipmentName;
+        } elseif (array_key_exists('equipmentName', $body)) {
+            $fields[] = 'equipment_name = ?';
+            $params[] = $this->nullable($body['equipmentName']);
+        }
+
+        if (array_key_exists('type', $body)) {
+            $fields[] = 'type = ?';
+            $params[] = $this->normalizeServiceCallType($body['type']);
+        }
+        if (array_key_exists('priority', $body)) {
+            $fields[] = 'priority = ?';
+            $params[] = $this->normalizeServiceCallPriority($body['priority']);
+        }
+        if (array_key_exists('description', $body)) {
+            $description = trim((string) $body['description']);
+            if ($description === '') {
+                Response::error('description is required', 400);
+            }
+            $fields[] = 'description = ?';
+            $params[] = $description;
+        }
+        if (array_key_exists('assignedUserId', $body) || array_key_exists('assignedName', $body)) {
+            $assignedUserId = array_key_exists('assignedUserId', $body)
+                ? $this->nullable($body['assignedUserId'])
+                : ($row['assigned_user_id'] ?? null);
+            $assignedName = array_key_exists('assignedName', $body)
+                ? $this->nullable($body['assignedName'])
+                : ($row['assigned_name'] ?? null);
+            if ($assignedUserId && !$assignedName) {
+                $u = $this->pdo->prepare('SELECT name FROM users WHERE id = ? LIMIT 1');
+                $u->execute([$assignedUserId]);
+                $uRow = $u->fetch();
+                if ($uRow) {
+                    $assignedName = $uRow['name'];
+                }
+            }
+            $fields[] = 'assigned_user_id = ?';
+            $params[] = $assignedUserId;
+            $fields[] = 'assigned_name = ?';
+            $params[] = $assignedName;
+        }
+        if (array_key_exists('scheduledFor', $body)) {
+            $fields[] = 'scheduled_for = ?';
+            $params[] = $this->nullable($body['scheduledFor']);
+        }
+        if (array_key_exists('notes', $body)) {
+            $fields[] = 'notes = ?';
+            $params[] = $this->nullable($body['notes']);
+        }
+        if (array_key_exists('invoiceDocId', $body)) {
+            $fields[] = 'invoice_doc_id = ?';
+            $params[] = $this->nullable($body['invoiceDocId']);
+        }
+
+        $status = null;
+        if (array_key_exists('status', $body)) {
+            $status = $this->normalizeServiceCallStatus($body['status']);
+            $fields[] = 'status = ?';
+            $params[] = $status;
+        }
+
+        if ($status !== null) {
+            if (in_array($status, ['done', 'closed'], true) && empty($row['completed_at'])) {
+                $fields[] = 'completed_at = ?';
+                $params[] = Helpers::now();
+            }
+            if ($status === 'open' || $status === 'assigned' || $status === 'in_progress') {
+                $fields[] = 'completed_at = ?';
+                $params[] = null;
+            }
+        }
+
+        if (!$fields) {
+            Response::json(['serviceCall' => $this->fetchServiceCall($id)]);
+        }
+
+        $fields[] = 'updated_at = ?';
+        $params[] = Helpers::now();
+        $params[] = $id;
+        $this->pdo->prepare('UPDATE service_calls SET ' . implode(', ', $fields) . ' WHERE id = ?')->execute($params);
+        Response::json(['serviceCall' => $this->fetchServiceCall($id)]);
+    }
+
+    private function fetchServiceCall(string $id): array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM service_calls WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        if (!$row) {
+            Response::error('Service call not found', 404);
+        }
+        return Helpers::serviceCallToApi($row);
+    }
+
+    private function normalizeServiceCallStatus($value): string
+    {
+        $allowed = ['open', 'assigned', 'in_progress', 'done', 'closed'];
+        $status = strtolower(trim((string) $value));
+        $status = str_replace([' ', '-'], '_', $status);
+        if ($status === 'inprogress') {
+            $status = 'in_progress';
+        }
+        return in_array($status, $allowed, true) ? $status : 'open';
+    }
+
+    private function normalizeServiceCallType($value): string
+    {
+        $allowed = ['Repair', 'Maintenance', 'Installation', 'Other'];
+        $type = trim((string) $value);
+        foreach ($allowed as $opt) {
+            if (strcasecmp($opt, $type) === 0) {
+                return $opt;
+            }
+        }
+        return 'Repair';
+    }
+
+    private function normalizeServiceCallPriority($value): string
+    {
+        $priority = strtolower(trim((string) $value));
+        return $priority === 'high' ? 'high' : 'normal';
+    }
+
     private function listAccounts(): void
     {
-        Auth::requireUser($this->pdo, $this->config);
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requirePermission($this->pdo, $user, 'payments', 'read');
         $companyId = (string) ($_GET['companyId'] ?? '');
         if ($companyId === '') {
             Response::error('companyId required', 400);
@@ -1029,7 +1664,7 @@ final class Api
     private function createAccount(): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'accounts', 'store']);
+        Auth::requirePermission($this->pdo, $user, 'payments', 'create');
         $body = Helpers::body();
         $companyId = (string) ($body['companyId'] ?? '');
         $name = trim((string) ($body['name'] ?? ''));
@@ -1051,12 +1686,24 @@ final class Api
 
     private function listTransactions(): void
     {
-        Auth::requireUser($this->pdo, $this->config);
+        $user = Auth::requireUser($this->pdo, $this->config);
         $companyId = (string) ($_GET['companyId'] ?? '');
         if ($companyId === '') {
             Response::error('companyId required', 400);
         }
         $type = isset($_GET['type']) ? (string) $_GET['type'] : '';
+        if ($type !== '') {
+            Auth::requirePermission($this->pdo, $user, $this->txnDirectory($type), 'read');
+        } else {
+            // Unfiltered list: allow if user can read any txn-related directory.
+            $ok = Rbac::isSuperAdmin($user)
+                || Rbac::can($user['_permissions'] ?? [], 'payments', 'read')
+                || Rbac::can($user['_permissions'] ?? [], 'new_invoice', 'read')
+                || Rbac::can($user['_permissions'] ?? [], 'purchase_bills', 'read');
+            if (!$ok) {
+                Response::error('Forbidden', 403);
+            }
+        }
         if ($type !== '') {
             $stmt = $this->pdo->prepare(
                 'SELECT * FROM transactions WHERE company_id = ? AND type = ? ORDER BY date DESC, created_at DESC'
@@ -1095,13 +1742,14 @@ final class Api
 
     private function getTransaction(string $id): void
     {
-        Auth::requireUser($this->pdo, $this->config);
+        $user = Auth::requireUser($this->pdo, $this->config);
         $stmt = $this->pdo->prepare('SELECT * FROM transactions WHERE id = ?');
         $stmt->execute([$id]);
         $row = $stmt->fetch();
         if (!$row) {
             Response::error('Transaction not found', 404);
         }
+        Auth::requirePermission($this->pdo, $user, $this->txnDirectory((string) $row['type']), 'read');
         if (($row['type'] ?? '') === 'sale') {
             (new Docs($this->pdo, $this->config))->ensureConfirmedSaleOrder($row, $this->linesFor($id));
         }
@@ -1117,7 +1765,7 @@ final class Api
 
     /**
      * Sale invoice id => the sale order that became this invoice
-     * (sale order → delivery → invoice).
+     * (sale order ? delivery ? invoice).
      *
      * @return array<string, array{id: string, number: string}>
      */
@@ -1163,7 +1811,11 @@ final class Api
     private function deleteTransaction(string $id): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'accounts']);
+        $row = $this->pdo->prepare('SELECT type FROM transactions WHERE id = ?');
+        $row->execute([$id]);
+        $txn = $row->fetch();
+        if (!$txn) { Response::error('Transaction not found', 404); }
+        Auth::requirePermission($this->pdo, $user, $this->txnDirectory((string)$txn['type']), 'delete');
         $stmt = $this->pdo->prepare('SELECT * FROM transactions WHERE id = ?');
         $stmt->execute([$id]);
         $row = $stmt->fetch();
@@ -1202,8 +1854,9 @@ final class Api
     private function createTransaction(): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'store', 'accounts']);
         $body = Helpers::body();
+        $type = (string) ($body['type'] ?? '');
+        Auth::requirePermission($this->pdo, $user, $this->txnDirectory($type), 'create');
         $companyId = (string) ($body['companyId'] ?? '');
         $type = (string) ($body['type'] ?? '');
         $number = trim((string) ($body['number'] ?? ''));
@@ -1280,7 +1933,11 @@ final class Api
     private function updateTransaction(string $id): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office', 'store', 'accounts']);
+        $row = $this->pdo->prepare('SELECT type FROM transactions WHERE id = ?');
+        $row->execute([$id]);
+        $txn = $row->fetch();
+        if (!$txn) { Response::error('Transaction not found', 404); }
+        Auth::requirePermission($this->pdo, $user, $this->txnDirectory((string)$txn['type']), 'update');
         $body = Helpers::body();
 
         $stmt = $this->pdo->prepare('SELECT * FROM transactions WHERE id = ?');
@@ -1376,7 +2033,8 @@ final class Api
 
     private function listMaster(): void
     {
-        Auth::requireUser($this->pdo, $this->config);
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requirePermission($this->pdo, $user, 'settings', 'read');
         $companyId = (string) ($_GET['companyId'] ?? '');
         if ($companyId === '') {
             Response::error('companyId required', 400);
@@ -1410,7 +2068,7 @@ final class Api
     private function createMaster(): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin', 'office']);
+        Auth::requirePermission($this->pdo, $user, 'settings', 'create');
         $body = Helpers::body();
         $companyId = (string) ($body['companyId'] ?? '');
         $kind = trim((string) ($body['kind'] ?? ''));
@@ -1443,15 +2101,15 @@ final class Api
     private function listUsers(): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin']);
+        Auth::requirePermission($this->pdo, $user, 'users', 'read');
         $rows = $this->pdo->query('SELECT * FROM users ORDER BY name ASC')->fetchAll();
-        Response::json(['users' => array_map([Roles::class, 'publicUser'], $rows)]);
+        Response::json(['users' => array_map(fn($r) => Roles::publicUserFromPdo($this->pdo, $r), $rows)]);
     }
 
     private function createUser(): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
-        Auth::requireRoles($user, ['admin']);
+        Auth::requirePermission($this->pdo, $user, 'users', 'create');
         $body = Helpers::body();
         $username = strtolower(trim((string) ($body['username'] ?? '')));
         $password = (string) ($body['password'] ?? '');
@@ -1467,18 +2125,30 @@ final class Api
         }
         $id = Helpers::cuid('usr');
         $now = Helpers::now();
+        $userType = (int) ($body['userType'] ?? $body['user_type'] ?? 0);
         $this->pdo->prepare(
-            'INSERT INTO users (id, username, password_hash, name, phone, email, role, is_active, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)'
+            'INSERT INTO users (id, username, password_hash, name, phone, email, role, user_type, is_active, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)'
         )->execute([
             $id, $username, password_hash($password, PASSWORD_BCRYPT), $name,
             $this->nullable($body['phone'] ?? null),
             $this->nullable($body['email'] ?? null),
-            $role, $now, $now,
+            $role, $userType, $now, $now,
         ]);
+
+        $roleName = Rbac::legacyRoleName($role);
+        $roleRow = $this->pdo->prepare('SELECT id FROM roles WHERE name = ? LIMIT 1');
+        $roleRow->execute([$roleName]);
+        $roleId = $roleRow->fetchColumn();
+        if ($roleId) {
+            $this->pdo->prepare(
+                'INSERT INTO user_roles (id, user_id, role_id, assigned_by, assigned_at) VALUES (?, ?, ?, ?, ?)'
+            )->execute([Helpers::cuid('ur'), $id, $roleId, $user['id'], $now]);
+        }
+
         $stmt = $this->pdo->prepare('SELECT * FROM users WHERE id = ?');
         $stmt->execute([$id]);
-        Response::json(['user' => Roles::publicUser($stmt->fetch())], 201);
+        Response::json(['user' => Roles::publicUserFromPdo($this->pdo, $stmt->fetch())], 201);
     }
 
     private function linesFor(string $transactionId): array

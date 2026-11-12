@@ -13,6 +13,7 @@ import {
   printDocument,
   type DocumentExportSpec,
 } from "../lib/documentExport";
+import { taxOptionsForCompany } from "../lib/companyLocale";
 import { money, todayISO } from "../lib/format";
 import { emptyPartyForm, partyPayloadFromForm } from "../lib/partyForm";
 import { useAsync } from "../lib/useAsync";
@@ -97,6 +98,7 @@ export function PurchaseFlowPage({ docType }: { docType: PurchaseFlowType }) {
   const meta = META[docType];
   const { company } = useApp();
   const companyId = company?.id;
+  const taxOptions = taxOptionsForCompany(company);
   const fmtMoney = (value: number) => money(value, company?.currency);
   const [open, setOpen] = useState(false);
   const [viewing, setViewing] = useState(false);
@@ -560,6 +562,7 @@ export function PurchaseFlowPage({ docType }: { docType: PurchaseFlowType }) {
   function exportDocExcel(doc: CommercialDoc) {
     const supplier = (doc.partyId && partyNames.get(doc.partyId)) || "";
     const priced = docType !== "rfq";
+    const qtyHeader = docType === "grn" ? "Received" : "Qty";
     let subtotal = 0;
     let taxTotal = 0;
     const rows = doc.lines.map((line, index) => {
@@ -589,8 +592,8 @@ export function PurchaseFlowPage({ docType }: { docType: PurchaseFlowType }) {
           : []),
       ],
       columns: priced
-        ? ["#", "Item", docType === "grn" ? "Received" : "Qty", "Rate", "Tax%", "Amount"]
-        : ["#", "Item", docType === "grn" ? "Received" : "Qty"],
+        ? ["#", "Item", qtyHeader, "Rate", "Tax%", "Amount"]
+        : ["#", "Item", qtyHeader],
       rows,
     });
   }
@@ -836,7 +839,15 @@ export function PurchaseFlowPage({ docType }: { docType: PurchaseFlowType }) {
                   {showPrice ? (
                     <>
                       <input type="number" min="0" step="any" value={line.rate} disabled={viewing} onChange={(e) => setLines((current) => current.map((row, i) => i === index ? { ...row, rate: e.target.value } : row))} />
-                      <input type="number" min="0" step="any" value={line.taxPercent} disabled={viewing} onChange={(e) => setLines((current) => current.map((row, i) => i === index ? { ...row, taxPercent: e.target.value } : row))} />
+                      <select
+                        value={line.taxPercent}
+                        disabled={viewing}
+                        onChange={(e) => setLines((current) => current.map((row, i) => i === index ? { ...row, taxPercent: e.target.value } : row))}
+                      >
+                        {taxOptions.map((opt) => (
+                          <option key={`${opt.value}-${opt.label}`} value={opt.value}>{opt.label}</option>
+                        ))}
+                      </select>
                     </>
                   ) : null}
                   {viewing ? <span /> : (
