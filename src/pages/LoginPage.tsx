@@ -4,21 +4,12 @@ import { Navigate, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { BrandLogo } from "../components/BrandLogo";
 import { useApp } from "../lib/AppContext";
-import { ROLE_LABELS, type AppRole } from "../lib/roles";
-
-const DEMO_USERS: Array<{ username: string; role: AppRole }> = [
-  { username: "admin", role: "admin" },
-  { username: "office1", role: "office" },
-  { username: "field1", role: "field" },
-  { username: "store1", role: "store" },
-  { username: "accounts1", role: "accounts" },
-];
 
 export function LoginPage() {
   const { login, session, ready, apiOnline } = useApp();
   const navigate = useNavigate();
-  const [username, setUsername] = useState("admin");
-  const [password, setPassword] = useState("demo@123");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -44,7 +35,7 @@ export function LoginPage() {
     setError("");
     try {
       await login(username.trim(), password);
-      navigate("/companies");
+      navigate("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {
@@ -79,7 +70,7 @@ export function LoginPage() {
           <h2>Login to NEXRON Flow</h2>
           <p className="tagline">
             {apiOnline
-              ? "Use a demo account (password demo@123)"
+              ? "Sign in with your username or email"
               : "PHP API offline — start Apache + MySQL in XAMPP"}
           </p>
 
@@ -97,7 +88,7 @@ export function LoginPage() {
 
           <div className="form-grid" style={{ gridTemplateColumns: "1fr" }}>
             <label className="field">
-              Username
+              Username or email
               <input
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
@@ -123,27 +114,6 @@ export function LoginPage() {
             <button className="btn btn-primary" type="submit" disabled={busy || !apiOnline}>
               {busy ? "Signing in…" : "Sign in"}
             </button>
-          </div>
-
-          <div style={{ marginTop: 16 }}>
-            <p className="muted" style={{ marginBottom: 8 }}>
-              Quick fill demo users
-            </p>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-              {DEMO_USERS.map((u) => (
-                <button
-                  key={u.username}
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={() => {
-                    setUsername(u.username);
-                    setPassword("demo@123");
-                  }}
-                >
-                  {u.username} · {ROLE_LABELS[u.role]}
-                </button>
-              ))}
-            </div>
           </div>
         </motion.form>
       </section>

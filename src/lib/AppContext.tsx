@@ -90,6 +90,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void boot();
   }, [boot]);
 
+  useEffect(() => {
+    if (!ready || !company?.id || !session) return;
+    if (!can(session, "backup", "read")) return;
+    void api.backups.list(company.id).catch(() => undefined);
+  }, [ready, company?.id, session]);
+
   const login = useCallback(async (username: string, password: string) => {
     const { token, user } = await api.login(username.trim(), password);
     setToken(token);

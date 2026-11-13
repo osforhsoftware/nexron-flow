@@ -199,7 +199,7 @@ function csvCell(value: string | number): string {
 }
 
 export function QuotationPage() {
-  const { company, companies, switchCompany } = useApp();
+  const { company } = useApp();
   const companyId = company?.id;
   const taxOptions = taxOptionsForCompany(company);
   const navigate = useNavigate();
@@ -1101,22 +1101,6 @@ export function QuotationPage() {
             </select>
             <ChevronDown size={13} />
           </label>
-          {companies.length > 1 ? (
-            <label className="filter-pill sale-filter-select">
-              <select
-                value={companyId ?? ""}
-                onChange={(e) => void switchCompany(e.target.value)}
-                aria-label="Firm filter"
-              >
-                {companies.map((firm) => (
-                  <option value={firm.id} key={firm.id}>
-                    {firm.name}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown size={13} />
-            </label>
-          ) : null}
         </div>
 
         <div className="sale-list-summary-row">

@@ -75,6 +75,7 @@ final class Roles
             'email' => $user['email'] ?: null,
             'role' => $role,
             'userType' => (int) ($user['user_type'] ?? 0),
+            'isStaff' => (int) ($user['is_staff'] ?? 0) === 1,
             'isSuperAdmin' => $isSuper,
             'modules' => $modules,
             'permissions' => $permissions,

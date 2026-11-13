@@ -55,6 +55,20 @@ final class Api
                 $this->updateCompany($m[1]);
             }
         }
+        if (preg_match('#^/api/companies/([^/]+)/backup$#', $path, $m) && $method === 'GET') {
+            $this->downloadManualBackup($m[1]);
+        }
+        if (preg_match('#^/api/companies/([^/]+)/backups$#', $path, $m)) {
+            if ($method === 'GET') {
+                $this->listBackups($m[1]);
+            }
+            if ($method === 'PATCH') {
+                $this->updateBackupSettings($m[1]);
+            }
+        }
+        if (preg_match('#^/api/companies/([^/]+)/backups/([^/]+)$#', $path, $m) && $method === 'GET') {
+            $this->downloadStoredBackup($m[1], $m[2]);
+        }
 
         if ($method === 'GET' && $path === '/api/party-types') {
             $this->listPartyTypes();
@@ -128,11 +142,18 @@ final class Api
             $this->updateEquipment($id);
         }
 
+        if ($method === 'GET' && $path === '/api/staff-assign-options') {
+            $this->listStaffAssignOptions();
+        }
+
         if ($method === 'GET' && $path === '/api/service-calls') {
             $this->listServiceCalls();
         }
         if ($method === 'POST' && $path === '/api/service-calls') {
             $this->createServiceCall();
+        }
+        if (preg_match('#^/api/service-calls/([^/]+)/to-invoice$#', $path, $m) && $method === 'POST') {
+            $this->serviceCallToInvoice($m[1]);
         }
         if (preg_match('#^/api/service-calls/([^/]+)$#', $path, $m)) {
             if ($method === 'GET') {
@@ -141,6 +162,23 @@ final class Api
             if ($method === 'PATCH') {
                 $this->updateServiceCall($m[1]);
             }
+        }
+
+        if ($method === 'GET' && $path === '/api/service-visits') {
+            $this->listServiceVisits();
+        }
+        if ($method === 'POST' && $path === '/api/service-visits') {
+            $this->createServiceVisit();
+        }
+        if (preg_match('#^/api/service-visits/([^/]+)$#', $path, $m) && $method === 'PATCH') {
+            $this->updateServiceVisit($m[1]);
+        }
+
+        if ($method === 'GET' && $path === '/api/notifications') {
+            $this->listNotifications();
+        }
+        if ($method === 'POST' && $path === '/api/notifications/mark-read') {
+            $this->markNotificationsRead();
         }
 
         if ($method === 'GET' && preg_match('#^/api/scan/product/([^/]+)$#', $path, $m)) {
@@ -186,6 +224,9 @@ final class Api
         if ($method === 'POST' && $path === '/api/users') {
             $this->createUser();
         }
+        if (preg_match('#^/api/users/([^/]+)$#', $path, $m) && ($method === 'PATCH' || $method === 'PUT')) {
+            $this->updateUser($m[1]);
+        }
 
         Response::error('Not found', 404);
     }
@@ -193,13 +234,18 @@ final class Api
     private function login(): void
     {
         $body = Helpers::body();
-        $username = strtolower(trim((string) ($body['username'] ?? '')));
+        $login = strtolower(trim((string) ($body['username'] ?? $body['email'] ?? '')));
         $password = (string) ($body['password'] ?? '');
-        if ($username === '' || $password === '') {
+        if ($login === '' || $password === '') {
             Response::error('Username and password required', 400);
         }
-        $stmt = $this->pdo->prepare('SELECT * FROM users WHERE username = ? LIMIT 1');
-        $stmt->execute([$username]);
+        $stmt = $this->pdo->prepare(
+            'SELECT * FROM users
+             WHERE username = ? OR (email IS NOT NULL AND LOWER(email) = ?)
+             ORDER BY CASE WHEN username = ? THEN 0 ELSE 1 END
+             LIMIT 1'
+        );
+        $stmt->execute([$login, $login, $login]);
         $user = $stmt->fetch();
         if (!$user || !(int) $user['is_active'] || !password_verify($password, $user['password_hash'])) {
             Response::error('Invalid username or password', 401);
@@ -1355,6 +1401,56 @@ final class Api
         return $value === true || $value === 1 || $value === '1' || $value === 'true';
     }
 
+    /**
+     * Lightweight role + user list for service-call / visit assignment.
+     * Requires service_calls read (not users/roles admin).
+     */
+    private function listStaffAssignOptions(): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requirePermission($this->pdo, $user, 'service_calls', 'read');
+
+        $roleRows = $this->pdo->query(
+            'SELECT id, name, status FROM roles WHERE status = 1 ORDER BY name ASC'
+        )->fetchAll();
+        $roles = [];
+        foreach ($roleRows as $row) {
+            $roles[] = [
+                'id' => $row['id'],
+                'name' => $row['name'],
+                'status' => (int) $row['status'],
+            ];
+        }
+
+        $userRows = $this->pdo->query(
+            'SELECT id, username, name, role, is_staff, user_type FROM users ORDER BY name ASC'
+        )->fetchAll();
+        $users = [];
+        foreach ($userRows as $row) {
+            $assigned = Rbac::rolesForUser($this->pdo, (string) $row['id']);
+            $rolesOut = [];
+            foreach ($assigned as $r) {
+                $rolesOut[] = [
+                    'id' => $r['id'],
+                    'name' => $r['name'],
+                    'status' => (int) ($r['status'] ?? 1),
+                ];
+            }
+            $users[] = [
+                'id' => $row['id'],
+                'username' => $row['username'],
+                'name' => $row['name'],
+                'role' => $row['role'] ?? 'office',
+                'isStaff' => (int) ($row['is_staff'] ?? 0) === 1,
+                'userType' => (int) ($row['user_type'] ?? 0),
+                'modules' => [],
+                'roles' => $rolesOut,
+            ];
+        }
+
+        Response::json(['roles' => $roles, 'users' => $users]);
+    }
+
     private function listServiceCalls(): void
     {
         $user = Auth::requireUser($this->pdo, $this->config);
@@ -1415,19 +1511,34 @@ final class Api
         }
 
         $assignedUserId = $this->nullable($body['assignedUserId'] ?? null);
-        $assignedName = $this->nullable($body['assignedName'] ?? null);
-        if ($assignedUserId && !$assignedName) {
-            $u = $this->pdo->prepare('SELECT name FROM users WHERE id = ? LIMIT 1');
-            $u->execute([$assignedUserId]);
-            $uRow = $u->fetch();
-            if ($uRow) {
-                $assignedName = $uRow['name'];
-            }
-        }
+        $assignedName = $this->resolveUserName($assignedUserId, $body['assignedName'] ?? null);
+
+        $inspectorId = $this->nullable($body['inspectorId'] ?? null) ?: $assignedUserId;
+        $inspectorName = $this->resolveUserName($inspectorId, $body['inspectorName'] ?? $assignedName);
+
+        $engineerUserId = $this->nullable($body['engineerUserId'] ?? null);
+        $engineerName = $this->resolveUserName($engineerUserId, $body['engineerName'] ?? null);
 
         $status = $this->normalizeServiceCallStatus($body['status'] ?? 'open');
-        if ($status === 'open' && ($assignedUserId || $assignedName)) {
-            $status = 'assigned';
+        // Assigning an inspector/tech at create moves Open → Inspection (no approval gate).
+        if ($status === 'open' && ($inspectorId || $assignedUserId || $assignedName)) {
+            $status = 'inspection';
+        }
+
+        $equipmentIds = $this->normalizeEquipmentIds($body, $equipmentId);
+        if ($equipmentIds && !$equipmentId) {
+            $equipmentId = $equipmentIds[0];
+            $eq = $this->pdo->prepare(
+                'SELECT id, name, asset_tag FROM equipment WHERE id = ? AND company_id = ? LIMIT 1'
+            );
+            $eq->execute([$equipmentId, $companyId]);
+            $eqRow = $eq->fetch();
+            if ($eqRow) {
+                $equipmentName = trim((string) $eqRow['name']);
+                if (!empty($eqRow['asset_tag'])) {
+                    $equipmentName .= ' · ' . $eqRow['asset_tag'];
+                }
+            }
         }
 
         $id = Helpers::cuid('scall');
@@ -1435,14 +1546,15 @@ final class Api
         $callNo = Helpers::nextServiceCallNo($this->pdo, $companyId);
         $type = $this->normalizeServiceCallType($body['type'] ?? 'Repair');
         $priority = $this->normalizeServiceCallPriority($body['priority'] ?? 'normal');
-        $completedAt = in_array($status, ['done', 'closed'], true) ? $now : null;
+        $completedAt = in_array($status, ['billing', 'closed'], true) ? $now : null;
 
         $this->pdo->prepare(
             'INSERT INTO service_calls (
                 id, company_id, call_no, customer_id, customer_name, equipment_id, equipment_name,
-                type, priority, status, description, assigned_user_id, assigned_name, scheduled_for,
+                equipment_ids_json, type, priority, status, description, assigned_user_id, assigned_name,
+                inspector_id, inspector_name, engineer_user_id, engineer_name, scheduled_for,
                 notes, invoice_doc_id, completed_at, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         )->execute([
             $id,
             $companyId,
@@ -1451,12 +1563,17 @@ final class Api
             $customerRow['name'],
             $equipmentId,
             $equipmentName,
+            Helpers::encodeJsonList($equipmentIds),
             $type,
             $priority,
             $status,
             $description,
             $assignedUserId,
             $assignedName,
+            $inspectorId,
+            $inspectorName,
+            $engineerUserId,
+            $engineerName,
             $this->nullable($body['scheduledFor'] ?? null),
             $this->nullable($body['notes'] ?? null),
             $this->nullable($body['invoiceDocId'] ?? null),
@@ -1464,6 +1581,29 @@ final class Api
             $now,
             $now,
         ]);
+
+        if ($inspectorId) {
+            $this->notifyUser(
+                $companyId,
+                $inspectorId,
+                'Assigned as Inspector',
+                "You were assigned to inspect service call {$callNo}.",
+                '/service/calls?id=' . $id,
+                'inspector',
+                $id
+            );
+        }
+        if ($engineerUserId && $engineerUserId !== $inspectorId) {
+            $this->notifyUser(
+                $companyId,
+                $engineerUserId,
+                'Assigned as Service Engineer',
+                "You were assigned as engineer on service call {$callNo}.",
+                '/service/calls?id=' . $id,
+                'engineer',
+                $id
+            );
+        }
 
         Response::json(['serviceCall' => $this->fetchServiceCall($id)], 201);
     }
@@ -1500,8 +1640,12 @@ final class Api
             $params[] = $customerRow['name'];
         }
 
-        if (array_key_exists('equipmentId', $body)) {
-            $equipmentId = $this->nullable($body['equipmentId']);
+        if (array_key_exists('equipmentIds', $body) || array_key_exists('equipmentId', $body)) {
+            $primaryId = array_key_exists('equipmentId', $body)
+                ? $this->nullable($body['equipmentId'])
+                : (($row['equipment_id'] ?? null) ?: null);
+            $equipmentIds = $this->normalizeEquipmentIds($body, $primaryId);
+            $equipmentId = $equipmentIds[0] ?? null;
             $equipmentName = $this->nullable($body['equipmentName'] ?? null);
             if ($equipmentId) {
                 $eq = $this->pdo->prepare(
@@ -1525,6 +1669,8 @@ final class Api
             $params[] = $equipmentId;
             $fields[] = 'equipment_name = ?';
             $params[] = $equipmentName;
+            $fields[] = 'equipment_ids_json = ?';
+            $params[] = Helpers::encodeJsonList($equipmentIds);
         } elseif (array_key_exists('equipmentName', $body)) {
             $fields[] = 'equipment_name = ?';
             $params[] = $this->nullable($body['equipmentName']);
@@ -1546,6 +1692,400 @@ final class Api
             $fields[] = 'description = ?';
             $params[] = $description;
         }
+
+        $prevInspector = ($row['inspector_id'] ?? null) ?: null;
+        $prevEngineer = ($row['engineer_user_id'] ?? null) ?: null;
+        $callNo = (string) ($row['call_no'] ?? '');
+
+        if (array_key_exists('assignedUserId', $body) || array_key_exists('assignedName', $body)) {
+            $assignedUserId = array_key_exists('assignedUserId', $body)
+                ? $this->nullable($body['assignedUserId'])
+                : ($row['assigned_user_id'] ?? null);
+            $assignedName = $this->resolveUserName(
+                $assignedUserId,
+                array_key_exists('assignedName', $body) ? ($body['assignedName'] ?? null) : ($row['assigned_name'] ?? null)
+            );
+            $fields[] = 'assigned_user_id = ?';
+            $params[] = $assignedUserId;
+            $fields[] = 'assigned_name = ?';
+            $params[] = $assignedName;
+            // Keep inspector in sync when caller only sets assigned and not inspector.
+            if (!array_key_exists('inspectorId', $body) && !array_key_exists('inspectorName', $body) && $assignedUserId) {
+                $fields[] = 'inspector_id = ?';
+                $params[] = $assignedUserId;
+                $fields[] = 'inspector_name = ?';
+                $params[] = $assignedName;
+            }
+        }
+
+        if (array_key_exists('inspectorId', $body) || array_key_exists('inspectorName', $body)) {
+            $inspectorId = array_key_exists('inspectorId', $body)
+                ? $this->nullable($body['inspectorId'])
+                : ($row['inspector_id'] ?? null);
+            $inspectorName = $this->resolveUserName(
+                $inspectorId,
+                array_key_exists('inspectorName', $body) ? ($body['inspectorName'] ?? null) : ($row['inspector_name'] ?? null)
+            );
+            $fields[] = 'inspector_id = ?';
+            $params[] = $inspectorId;
+            $fields[] = 'inspector_name = ?';
+            $params[] = $inspectorName;
+        }
+
+        if (array_key_exists('engineerUserId', $body) || array_key_exists('engineerName', $body)) {
+            $engineerUserId = array_key_exists('engineerUserId', $body)
+                ? $this->nullable($body['engineerUserId'])
+                : ($row['engineer_user_id'] ?? null);
+            $engineerName = $this->resolveUserName(
+                $engineerUserId,
+                array_key_exists('engineerName', $body) ? ($body['engineerName'] ?? null) : ($row['engineer_name'] ?? null)
+            );
+            $fields[] = 'engineer_user_id = ?';
+            $params[] = $engineerUserId;
+            $fields[] = 'engineer_name = ?';
+            $params[] = $engineerName;
+        }
+
+        $stringFields = [
+            'inspectionDate' => 'inspection_date',
+            'findings' => 'findings',
+            'severity' => 'severity',
+            'recommendation' => 'recommendation',
+            'recommendationNotes' => 'recommendation_notes',
+            'workRequired' => 'work_required',
+            'workDetails' => 'work_details',
+            'requestedParts' => 'requested_parts',
+            'inspectorSignature' => 'inspector_signature',
+            'estimateNotes' => 'estimate_notes',
+            'estimateFinalizedAt' => 'estimate_finalized_at',
+            'customerReceiverName' => 'customer_receiver_name',
+            'customerSignature' => 'customer_signature',
+            'qaDecision' => 'qa_decision',
+            'qaRemarks' => 'qa_remarks',
+            'qaVerifiedBy' => 'qa_verified_by',
+            'qaVerifiedByName' => 'qa_verified_by_name',
+            'qaVerifiedAt' => 'qa_verified_at',
+            'scheduledFor' => 'scheduled_for',
+            'notes' => 'notes',
+            'invoiceDocId' => 'invoice_doc_id',
+        ];
+        foreach ($stringFields as $apiKey => $col) {
+            if (array_key_exists($apiKey, $body)) {
+                $fields[] = "{$col} = ?";
+                $params[] = $this->nullable($body[$apiKey]);
+            }
+        }
+
+        $jsonFields = [
+            'inspectionPhotos' => 'inspection_photos_json',
+            'estimateLines' => 'estimate_lines_json',
+            'partsUsed' => 'parts_used_json',
+            'servicePhotos' => 'service_photos_json',
+        ];
+        foreach ($jsonFields as $apiKey => $col) {
+            if (array_key_exists($apiKey, $body)) {
+                $list = is_array($body[$apiKey]) ? $body[$apiKey] : [];
+                $fields[] = "{$col} = ?";
+                $params[] = Helpers::encodeJsonList($list);
+            }
+        }
+
+        if (array_key_exists('estimateDiscount', $body)) {
+            $fields[] = 'estimate_discount = ?';
+            $params[] = (float) $body['estimateDiscount'];
+        }
+        if (array_key_exists('customerHandoff', $body)) {
+            $fields[] = 'customer_handoff = ?';
+            $params[] = $this->boolVal($body['customerHandoff']) ? 1 : 0;
+        }
+
+        // Lightweight workflow actions (no approval locks).
+        $action = trim((string) ($body['action'] ?? ''));
+        $now = Helpers::now();
+        $status = null;
+        $incomingInspectorId = array_key_exists('inspectorId', $body)
+            ? $this->nullable($body['inspectorId'])
+            : (array_key_exists('assignedUserId', $body) ? $this->nullable($body['assignedUserId']) : null);
+
+        if ($action === 'complete_inspection') {
+            $status = 'estimate';
+            if (empty($body['inspectionDate']) && empty($row['inspection_date'])) {
+                $fields[] = 'inspection_date = ?';
+                $params[] = $now;
+            }
+        } elseif ($action === 'skip_estimate') {
+            $status = 'in_progress';
+            if (empty($body['inspectionDate']) && empty($row['inspection_date'])) {
+                $fields[] = 'inspection_date = ?';
+                $params[] = $now;
+            }
+        } elseif ($action === 'finalize_estimate') {
+            $status = 'in_progress';
+            $fields[] = 'estimate_finalized_at = ?';
+            $params[] = $now;
+        } elseif ($action === 'submit_for_qa') {
+            $status = 'qa';
+        } elseif ($action === 'qa_pass') {
+            $status = 'billing';
+            $fields[] = 'qa_decision = ?';
+            $params[] = 'pass';
+            $fields[] = 'qa_verified_by = ?';
+            $params[] = $user['id'] ?? null;
+            $fields[] = 'qa_verified_by_name = ?';
+            $params[] = $user['name'] ?? null;
+            $fields[] = 'qa_verified_at = ?';
+            $params[] = $now;
+            if (array_key_exists('qaRemarks', $body)) {
+                // already handled above
+            }
+        } elseif ($action === 'qa_fail') {
+            $status = 'in_progress';
+            $fields[] = 'qa_decision = ?';
+            $params[] = 'fail';
+            $fields[] = 'qa_verified_by = ?';
+            $params[] = $user['id'] ?? null;
+            $fields[] = 'qa_verified_by_name = ?';
+            $params[] = $user['name'] ?? null;
+            $fields[] = 'qa_verified_at = ?';
+            $params[] = $now;
+        } elseif ($action === 'close') {
+            $status = 'closed';
+        } elseif ($action === 'deduct_parts_stock' && array_key_exists('partsUsed', $body) && is_array($body['partsUsed'])) {
+            $this->deductPartsStock($companyId, $body['partsUsed'], $now);
+        }
+
+        // Explicit workflow actions win over a raw status field from the form.
+        if ($action === '' && array_key_exists('status', $body)) {
+            $status = $this->normalizeServiceCallStatus($body['status']);
+        }
+        if ($status !== null) {
+            $status = $this->normalizeServiceCallStatus($status);
+            $fields[] = 'status = ?';
+            $params[] = $status;
+        }
+
+        // Auto-bump Open → Inspection when inspector is set.
+        if ($status === null) {
+            $currentStatus = Helpers::normalizeServiceCallStatusValue($row['status'] ?? 'open');
+            if ($currentStatus === 'open' && $incomingInspectorId) {
+                $status = 'inspection';
+                $fields[] = 'status = ?';
+                $params[] = $status;
+            }
+        }
+
+        if ($status !== null) {
+            if (in_array($status, ['billing', 'closed'], true) && empty($row['completed_at'])) {
+                $fields[] = 'completed_at = ?';
+                $params[] = $now;
+            }
+            if (in_array($status, ['open', 'inspection', 'estimate', 'in_progress', 'qa'], true)) {
+                $fields[] = 'completed_at = ?';
+                $params[] = null;
+            }
+        }
+
+        if (!$fields) {
+            Response::json(['serviceCall' => $this->fetchServiceCall($id)]);
+        }
+
+        $fields[] = 'updated_at = ?';
+        $params[] = $now;
+        $params[] = $id;
+        $this->pdo->prepare('UPDATE service_calls SET ' . implode(', ', $fields) . ' WHERE id = ?')->execute($params);
+
+        $fresh = $this->fetchServiceCall($id);
+        $newInspector = $fresh['inspectorId'] ?? null;
+        $newEngineer = $fresh['engineerUserId'] ?? null;
+        if ($newInspector && $newInspector !== $prevInspector) {
+            $this->notifyUser(
+                $companyId,
+                (string) $newInspector,
+                'Assigned as Inspector',
+                "You were assigned to inspect service call {$callNo}.",
+                '/service/calls?id=' . $id,
+                'inspector',
+                $id
+            );
+        }
+        if ($newEngineer && $newEngineer !== $prevEngineer) {
+            $this->notifyUser(
+                $companyId,
+                (string) $newEngineer,
+                'Assigned as Service Engineer',
+                "You were assigned as engineer on service call {$callNo}.",
+                '/service/calls?id=' . $id,
+                'engineer',
+                $id
+            );
+        }
+        if (($fresh['qaDecision'] ?? null) === null && ($status === 'qa' || $action === 'submit_for_qa')) {
+            // optional: could notify a default QA role; keep lightweight — no mandatory assignee
+        }
+
+        Response::json(['serviceCall' => $fresh]);
+    }
+
+    private function fetchServiceCall(string $id): array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM service_calls WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        if (!$row) {
+            Response::error('Service call not found', 404);
+        }
+        return Helpers::serviceCallToApi($row);
+    }
+
+    private function normalizeServiceCallStatus($value): string
+    {
+        return Helpers::normalizeServiceCallStatusValue($value);
+    }
+
+    private function normalizeServiceCallType($value): string
+    {
+        $allowed = ['Repair', 'Maintenance', 'Installation', 'Inspection', 'Other'];
+        $type = trim((string) $value);
+        foreach ($allowed as $opt) {
+            if (strcasecmp($opt, $type) === 0) {
+                return $opt;
+            }
+        }
+        return 'Repair';
+    }
+
+    private function normalizeServiceCallPriority($value): string
+    {
+        $priority = strtolower(trim((string) $value));
+        if ($priority === 'urgent') {
+            return 'urgent';
+        }
+        if ($priority === 'high') {
+            return 'high';
+        }
+        return 'normal';
+    }
+
+    private function listServiceVisits(): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requirePermission($this->pdo, $user, 'service_calls', 'read');
+        $companyId = (string) ($_GET['companyId'] ?? '');
+        $serviceCallId = (string) ($_GET['serviceCallId'] ?? '');
+        if ($companyId === '' || $serviceCallId === '') {
+            Response::error('companyId and serviceCallId are required', 400);
+        }
+        $stmt = $this->pdo->prepare(
+            'SELECT * FROM service_visits
+             WHERE company_id = ? AND service_call_id = ?
+             ORDER BY visit_date DESC, created_at DESC'
+        );
+        $stmt->execute([$companyId, $serviceCallId]);
+        Response::json(['visits' => array_map([Helpers::class, 'serviceVisitToApi'], $stmt->fetchAll())]);
+    }
+
+    private function createServiceVisit(): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requirePermission($this->pdo, $user, 'service_calls', 'create');
+        $body = Helpers::body();
+        $companyId = (string) ($body['companyId'] ?? $_GET['companyId'] ?? '');
+        $serviceCallId = trim((string) ($body['serviceCallId'] ?? ''));
+        $visitDate = trim((string) ($body['visitDate'] ?? ''));
+        if ($companyId === '' || $serviceCallId === '' || $visitDate === '') {
+            Response::error('serviceCallId and visitDate are required', 400);
+        }
+
+        $callStmt = $this->pdo->prepare('SELECT * FROM service_calls WHERE id = ? AND company_id = ? LIMIT 1');
+        $callStmt->execute([$serviceCallId, $companyId]);
+        $call = $callStmt->fetch();
+        if (!$call) {
+            Response::error('Service call not found', 404);
+        }
+
+        $assignedUserId = $this->nullable($body['assignedUserId'] ?? null);
+        $assignedName = $this->nullable($body['assignedName'] ?? null);
+        if ($assignedUserId && !$assignedName) {
+            $u = $this->pdo->prepare('SELECT name FROM users WHERE id = ? LIMIT 1');
+            $u->execute([$assignedUserId]);
+            $uRow = $u->fetch();
+            if ($uRow) {
+                $assignedName = $uRow['name'];
+            }
+        }
+        if (!$assignedUserId && !$assignedName) {
+            $assignedUserId = ($call['assigned_user_id'] ?? null) ?: null;
+            $assignedName = ($call['assigned_name'] ?? null) ?: null;
+        }
+
+        $status = $this->normalizeServiceVisitStatus($body['status'] ?? 'planned');
+        $markCallDone = $this->boolVal($body['markCallDone'] ?? false);
+        if ($markCallDone) {
+            $status = 'completed';
+        }
+
+        $id = Helpers::cuid('svisit');
+        $now = Helpers::now();
+        $visitNo = Helpers::nextServiceVisitNo($this->pdo, $serviceCallId);
+
+        $this->pdo->prepare(
+            'INSERT INTO service_visits (
+                id, company_id, service_call_id, visit_no, visit_date, assigned_user_id, assigned_name,
+                status, work_done, notes, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        )->execute([
+            $id,
+            $companyId,
+            $serviceCallId,
+            $visitNo,
+            $visitDate,
+            $assignedUserId,
+            $assignedName,
+            $status,
+            $this->nullable($body['workDone'] ?? null),
+            $this->nullable($body['notes'] ?? null),
+            $now,
+            $now,
+        ]);
+
+        $this->maybeBumpCallFromVisit($call, $status, $markCallDone, $now);
+
+        Response::json([
+            'visit' => $this->fetchServiceVisit($id),
+            'serviceCall' => $this->fetchServiceCall($serviceCallId),
+        ], 201);
+    }
+
+    private function updateServiceVisit(string $id): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requirePermission($this->pdo, $user, 'service_calls', 'update');
+        $body = Helpers::body();
+        $existing = $this->pdo->prepare('SELECT * FROM service_visits WHERE id = ?');
+        $existing->execute([$id]);
+        $row = $existing->fetch();
+        if (!$row) {
+            Response::error('Visit not found', 404);
+        }
+
+        $callStmt = $this->pdo->prepare('SELECT * FROM service_calls WHERE id = ? LIMIT 1');
+        $callStmt->execute([(string) $row['service_call_id']]);
+        $call = $callStmt->fetch();
+        if (!$call) {
+            Response::error('Service call not found', 404);
+        }
+
+        $fields = [];
+        $params = [];
+
+        if (array_key_exists('visitDate', $body)) {
+            $visitDate = trim((string) $body['visitDate']);
+            if ($visitDate === '') {
+                Response::error('visitDate is required', 400);
+            }
+            $fields[] = 'visit_date = ?';
+            $params[] = $visitDate;
+        }
         if (array_key_exists('assignedUserId', $body) || array_key_exists('assignedName', $body)) {
             $assignedUserId = array_key_exists('assignedUserId', $body)
                 ? $this->nullable($body['assignedUserId'])
@@ -1566,86 +2106,86 @@ final class Api
             $fields[] = 'assigned_name = ?';
             $params[] = $assignedName;
         }
-        if (array_key_exists('scheduledFor', $body)) {
-            $fields[] = 'scheduled_for = ?';
-            $params[] = $this->nullable($body['scheduledFor']);
+        if (array_key_exists('workDone', $body)) {
+            $fields[] = 'work_done = ?';
+            $params[] = $this->nullable($body['workDone']);
         }
         if (array_key_exists('notes', $body)) {
             $fields[] = 'notes = ?';
             $params[] = $this->nullable($body['notes']);
         }
-        if (array_key_exists('invoiceDocId', $body)) {
-            $fields[] = 'invoice_doc_id = ?';
-            $params[] = $this->nullable($body['invoiceDocId']);
-        }
 
         $status = null;
-        if (array_key_exists('status', $body)) {
-            $status = $this->normalizeServiceCallStatus($body['status']);
+        $markCallDone = $this->boolVal($body['markCallDone'] ?? false);
+        if (array_key_exists('status', $body) || $markCallDone) {
+            $status = $markCallDone
+                ? 'completed'
+                : $this->normalizeServiceVisitStatus($body['status'] ?? $row['status']);
             $fields[] = 'status = ?';
             $params[] = $status;
         }
 
-        if ($status !== null) {
-            if (in_array($status, ['done', 'closed'], true) && empty($row['completed_at'])) {
-                $fields[] = 'completed_at = ?';
-                $params[] = Helpers::now();
-            }
-            if ($status === 'open' || $status === 'assigned' || $status === 'in_progress') {
-                $fields[] = 'completed_at = ?';
-                $params[] = null;
-            }
+        if ($fields) {
+            $fields[] = 'updated_at = ?';
+            $params[] = Helpers::now();
+            $params[] = $id;
+            $this->pdo->prepare('UPDATE service_visits SET ' . implode(', ', $fields) . ' WHERE id = ?')->execute($params);
         }
 
-        if (!$fields) {
-            Response::json(['serviceCall' => $this->fetchServiceCall($id)]);
-        }
+        $finalStatus = $status ?? (string) $row['status'];
+        $this->maybeBumpCallFromVisit($call, $finalStatus, $markCallDone, Helpers::now());
 
-        $fields[] = 'updated_at = ?';
-        $params[] = Helpers::now();
-        $params[] = $id;
-        $this->pdo->prepare('UPDATE service_calls SET ' . implode(', ', $fields) . ' WHERE id = ?')->execute($params);
-        Response::json(['serviceCall' => $this->fetchServiceCall($id)]);
+        Response::json([
+            'visit' => $this->fetchServiceVisit($id),
+            'serviceCall' => $this->fetchServiceCall((string) $row['service_call_id']),
+        ]);
     }
 
-    private function fetchServiceCall(string $id): array
+    private function maybeBumpCallFromVisit(array $call, string $visitStatus, bool $markCallDone, string $now): void
     {
-        $stmt = $this->pdo->prepare('SELECT * FROM service_calls WHERE id = ?');
+        $callId = (string) $call['id'];
+        $callStatus = Helpers::normalizeServiceCallStatusValue($call['status'] ?? 'open');
+
+        if ($markCallDone || $visitStatus === 'completed') {
+            // Completing a visit keeps the call in the job stage; QA is an explicit staff action.
+            if (in_array($callStatus, ['open', 'inspection', 'estimate'], true)) {
+                $this->pdo->prepare(
+                    'UPDATE service_calls SET status = ?, updated_at = ? WHERE id = ?'
+                )->execute(['in_progress', $now, $callId]);
+            }
+            return;
+        }
+
+        if (in_array($callStatus, ['open', 'inspection', 'estimate'], true)) {
+            $this->pdo->prepare(
+                'UPDATE service_calls SET status = ?, updated_at = ? WHERE id = ?'
+            )->execute(['in_progress', $now, $callId]);
+        }
+    }
+
+    private function fetchServiceVisit(string $id): array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM service_visits WHERE id = ?');
         $stmt->execute([$id]);
         $row = $stmt->fetch();
         if (!$row) {
-            Response::error('Service call not found', 404);
+            Response::error('Visit not found', 404);
         }
-        return Helpers::serviceCallToApi($row);
+        return Helpers::serviceVisitToApi($row);
     }
 
-    private function normalizeServiceCallStatus($value): string
+    private function normalizeServiceVisitStatus($value): string
     {
-        $allowed = ['open', 'assigned', 'in_progress', 'done', 'closed'];
+        $allowed = ['planned', 'in_progress', 'completed'];
         $status = strtolower(trim((string) $value));
         $status = str_replace([' ', '-'], '_', $status);
         if ($status === 'inprogress') {
             $status = 'in_progress';
         }
-        return in_array($status, $allowed, true) ? $status : 'open';
-    }
-
-    private function normalizeServiceCallType($value): string
-    {
-        $allowed = ['Repair', 'Maintenance', 'Installation', 'Other'];
-        $type = trim((string) $value);
-        foreach ($allowed as $opt) {
-            if (strcasecmp($opt, $type) === 0) {
-                return $opt;
-            }
+        if ($status === 'complete' || $status === 'done') {
+            $status = 'completed';
         }
-        return 'Repair';
-    }
-
-    private function normalizeServiceCallPriority($value): string
-    {
-        $priority = strtolower(trim((string) $value));
-        return $priority === 'high' ? 'high' : 'normal';
+        return in_array($status, $allowed, true) ? $status : 'planned';
     }
 
     private function listAccounts(): void
@@ -2114,7 +2654,12 @@ final class Api
         $username = strtolower(trim((string) ($body['username'] ?? '')));
         $password = (string) ($body['password'] ?? '');
         $name = trim((string) ($body['name'] ?? ''));
-        $role = (string) ($body['role'] ?? '');
+        $roleId = trim((string) ($body['roleId'] ?? $body['role_id'] ?? ''));
+        $role = strtolower(trim((string) ($body['role'] ?? '')));
+        $isStaff = !empty($body['isStaff']) || !empty($body['is_staff']) || !empty($body['assignAsStaff']);
+        if ($role === '' && $roleId !== '') {
+            $role = 'office';
+        }
         if ($username === '' || strlen($password) < 4 || $name === '' || !in_array($role, Roles::ALL, true)) {
             Response::error('Invalid user data', 400);
         }
@@ -2123,27 +2668,44 @@ final class Api
         if ($exists->fetch()) {
             Response::error('Username already exists', 409);
         }
+
+        $assignedRoleId = $roleId;
+        $roleNameRow = null;
+        if ($assignedRoleId !== '') {
+            $check = $this->pdo->prepare('SELECT id, name FROM roles WHERE id = ? LIMIT 1');
+            $check->execute([$assignedRoleId]);
+            $roleNameRow = $check->fetch();
+            if (!$roleNameRow) {
+                Response::error('Role not found', 400);
+            }
+            $slug = strtolower(preg_replace('/\s+/', '', (string) $roleNameRow['name']) ?: 'office');
+            if (in_array($slug, Roles::ALL, true)) {
+                $role = $slug;
+            }
+        } else {
+            $legacyName = Rbac::legacyRoleName($role);
+            $roleRow = $this->pdo->prepare('SELECT id FROM roles WHERE name = ? LIMIT 1');
+            $roleRow->execute([$legacyName]);
+            $assignedRoleId = (string) ($roleRow->fetchColumn() ?: '');
+        }
+
         $id = Helpers::cuid('usr');
         $now = Helpers::now();
         $userType = (int) ($body['userType'] ?? $body['user_type'] ?? 0);
         $this->pdo->prepare(
-            'INSERT INTO users (id, username, password_hash, name, phone, email, role, user_type, is_active, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)'
+            'INSERT INTO users (id, username, password_hash, name, phone, email, role, user_type, is_staff, is_active, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)'
         )->execute([
             $id, $username, password_hash($password, PASSWORD_BCRYPT), $name,
             $this->nullable($body['phone'] ?? null),
             $this->nullable($body['email'] ?? null),
-            $role, $userType, $now, $now,
+            $role, $userType, $isStaff ? 1 : 0, $now, $now,
         ]);
 
-        $roleName = Rbac::legacyRoleName($role);
-        $roleRow = $this->pdo->prepare('SELECT id FROM roles WHERE name = ? LIMIT 1');
-        $roleRow->execute([$roleName]);
-        $roleId = $roleRow->fetchColumn();
-        if ($roleId) {
+        if ($assignedRoleId !== '') {
             $this->pdo->prepare(
                 'INSERT INTO user_roles (id, user_id, role_id, assigned_by, assigned_at) VALUES (?, ?, ?, ?, ?)'
-            )->execute([Helpers::cuid('ur'), $id, $roleId, $user['id'], $now]);
+            )->execute([Helpers::cuid('ur'), $id, $assignedRoleId, $user['id'], $now]);
         }
 
         $stmt = $this->pdo->prepare('SELECT * FROM users WHERE id = ?');
@@ -2151,11 +2713,432 @@ final class Api
         Response::json(['user' => Roles::publicUserFromPdo($this->pdo, $stmt->fetch())], 201);
     }
 
+    private function updateUser(string $id): void
+    {
+        $actor = Auth::requireUser($this->pdo, $this->config);
+        Auth::requirePermission($this->pdo, $actor, 'users', 'update');
+        $stmt = $this->pdo->prepare('SELECT * FROM users WHERE id = ? LIMIT 1');
+        $stmt->execute([$id]);
+        $existing = $stmt->fetch();
+        if (!$existing) {
+            Response::error('User not found', 404);
+        }
+
+        $body = Helpers::body();
+        $username = array_key_exists('username', $body)
+            ? strtolower(trim((string) $body['username']))
+            : (string) $existing['username'];
+        $name = array_key_exists('name', $body)
+            ? trim((string) $body['name'])
+            : (string) $existing['name'];
+        $password = (string) ($body['password'] ?? '');
+        $roleId = trim((string) ($body['roleId'] ?? $body['role_id'] ?? ''));
+        $role = strtolower(trim((string) ($body['role'] ?? $existing['role'] ?? 'office')));
+        $isStaff = array_key_exists('isStaff', $body) || array_key_exists('is_staff', $body) || array_key_exists('assignAsStaff', $body)
+            ? (!empty($body['isStaff']) || !empty($body['is_staff']) || !empty($body['assignAsStaff']))
+            : ((int) ($existing['is_staff'] ?? 0) === 1);
+
+        if ($username === '' || $name === '' || !in_array($role, Roles::ALL, true)) {
+            Response::error('Invalid user data', 400);
+        }
+        if ($password !== '' && strlen($password) < 4) {
+            Response::error('Password must be at least 4 characters', 400);
+        }
+
+        $dup = $this->pdo->prepare('SELECT id FROM users WHERE username = ? AND id <> ? LIMIT 1');
+        $dup->execute([$username, $id]);
+        if ($dup->fetch()) {
+            Response::error('Username already exists', 409);
+        }
+
+        if ($roleId !== '') {
+            $check = $this->pdo->prepare('SELECT id, name FROM roles WHERE id = ? LIMIT 1');
+            $check->execute([$roleId]);
+            $roleNameRow = $check->fetch();
+            if (!$roleNameRow) {
+                Response::error('Role not found', 400);
+            }
+            $slug = strtolower(preg_replace('/\s+/', '', (string) $roleNameRow['name']) ?: 'office');
+            if (in_array($slug, Roles::ALL, true)) {
+                $role = $slug;
+            }
+        }
+
+        $now = Helpers::now();
+        $phone = array_key_exists('phone', $body) ? $this->nullable($body['phone']) : $existing['phone'];
+        $email = array_key_exists('email', $body) ? $this->nullable($body['email']) : $existing['email'];
+
+        if ($password !== '') {
+            $this->pdo->prepare(
+                'UPDATE users SET username = ?, password_hash = ?, name = ?, phone = ?, email = ?, role = ?, is_staff = ?, updated_at = ? WHERE id = ?'
+            )->execute([
+                $username, password_hash($password, PASSWORD_BCRYPT), $name, $phone, $email, $role, $isStaff ? 1 : 0, $now, $id,
+            ]);
+        } else {
+            $this->pdo->prepare(
+                'UPDATE users SET username = ?, name = ?, phone = ?, email = ?, role = ?, is_staff = ?, updated_at = ? WHERE id = ?'
+            )->execute([
+                $username, $name, $phone, $email, $role, $isStaff ? 1 : 0, $now, $id,
+            ]);
+        }
+
+        if ($roleId !== '') {
+            $this->pdo->prepare('DELETE FROM user_roles WHERE user_id = ?')->execute([$id]);
+            $this->pdo->prepare(
+                'INSERT INTO user_roles (id, user_id, role_id, assigned_by, assigned_at) VALUES (?, ?, ?, ?, ?)'
+            )->execute([Helpers::cuid('ur'), $id, $roleId, $actor['id'], $now]);
+        }
+
+        $fresh = $this->pdo->prepare('SELECT * FROM users WHERE id = ?');
+        $fresh->execute([$id]);
+        Response::json(['user' => Roles::publicUserFromPdo($this->pdo, $fresh->fetch())]);
+    }
+
+    /** @return array<string,mixed> */
+    private function backupCompany(string $companyId, string $action): array
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        Auth::requirePermission($this->pdo, $user, 'backup', $action);
+        $stmt = $this->pdo->prepare('SELECT * FROM companies WHERE id = ?');
+        $stmt->execute([$companyId]);
+        $company = $stmt->fetch();
+        if (!$company) {
+            Response::error('Company not found', 404);
+        }
+        return $company;
+    }
+
+    private function listBackups(string $companyId): void
+    {
+        $company = $this->backupCompany($companyId, 'read');
+        Backup::ensureMonthly($this->pdo, $this->config, $company);
+        Response::json(Backup::state($this->pdo, $this->config, $companyId));
+    }
+
+    private function updateBackupSettings(string $companyId): void
+    {
+        $company = $this->backupCompany($companyId, 'update');
+        $body = Helpers::body();
+        if (!array_key_exists('autoMonthly', $body)) {
+            Response::error('autoMonthly required', 400);
+        }
+        $auto = (bool) $body['autoMonthly'];
+        Backup::setAuto($this->pdo, $companyId, $auto);
+        if ($auto) {
+            Backup::ensureMonthly($this->pdo, $this->config, $company);
+        }
+        Response::json(Backup::state($this->pdo, $this->config, $companyId));
+    }
+
+    private function downloadManualBackup(string $companyId): void
+    {
+        $company = $this->backupCompany($companyId, 'read');
+        Response::attachment(Backup::manualFilename($company), Backup::manualJson($this->pdo, $company));
+    }
+
+    private function downloadStoredBackup(string $companyId, string $period): void
+    {
+        $company = $this->backupCompany($companyId, 'read');
+        $json = Backup::read($this->config, $companyId, $period);
+        if ($json === null) {
+            Response::error('Backup not found', 404);
+        }
+        Response::attachment(Backup::storedFilename($company, $period), $json);
+    }
+
     private function linesFor(string $transactionId): array
     {
         $stmt = $this->pdo->prepare('SELECT * FROM line_items WHERE transaction_id = ?');
         $stmt->execute([$transactionId]);
         return $stmt->fetchAll();
+    }
+
+    private function resolveUserName(?string $userId, $fallbackName = null): ?string
+    {
+        $name = $this->nullable($fallbackName);
+        if ($userId && !$name) {
+            $u = $this->pdo->prepare('SELECT name FROM users WHERE id = ? LIMIT 1');
+            $u->execute([$userId]);
+            $uRow = $u->fetch();
+            if ($uRow) {
+                $name = $uRow['name'];
+            }
+        }
+        return $name;
+    }
+
+    /** @return list<string> */
+    private function normalizeEquipmentIds(array $body, ?string $primaryId = null): array
+    {
+        $ids = [];
+        if (isset($body['equipmentIds']) && is_array($body['equipmentIds'])) {
+            foreach ($body['equipmentIds'] as $id) {
+                $id = trim((string) $id);
+                if ($id !== '') {
+                    $ids[] = $id;
+                }
+            }
+        }
+        if ($primaryId) {
+            array_unshift($ids, $primaryId);
+        }
+        return array_values(array_unique($ids));
+    }
+
+    private function notifyUser(
+        string $companyId,
+        string $userId,
+        string $title,
+        string $body,
+        ?string $link,
+        ?string $kind,
+        ?string $refId
+    ): void {
+        try {
+            $this->pdo->prepare(
+                'INSERT INTO notifications (
+                    id, company_id, user_id, title, body, link, kind, ref_id, read_at, created_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)'
+            )->execute([
+                Helpers::cuid('ntf'),
+                $companyId,
+                $userId,
+                $title,
+                $body,
+                $link,
+                $kind,
+                $refId,
+                Helpers::now(),
+            ]);
+        } catch (Throwable $e) {
+            // Notifications are best-effort; never block the call save.
+        }
+    }
+
+    private function listNotifications(): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        $companyId = (string) ($_GET['companyId'] ?? '');
+        $unreadOnly = isset($_GET['unreadOnly']) && (string) $_GET['unreadOnly'] !== '0';
+        $sql = 'SELECT * FROM notifications WHERE user_id = ?';
+        $params = [$user['id']];
+        if ($companyId !== '') {
+            $sql .= ' AND company_id = ?';
+            $params[] = $companyId;
+        }
+        if ($unreadOnly) {
+            $sql .= ' AND read_at IS NULL';
+        }
+        $sql .= ' ORDER BY created_at DESC LIMIT 50';
+        try {
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute($params);
+            Response::json(['notifications' => array_map([Helpers::class, 'notificationToApi'], $stmt->fetchAll())]);
+        } catch (Throwable $e) {
+            Response::json(['notifications' => []]);
+        }
+    }
+
+    private function markNotificationsRead(): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        $body = Helpers::body();
+        $ids = is_array($body['ids'] ?? null) ? $body['ids'] : [];
+        $now = Helpers::now();
+        try {
+            if ($ids) {
+                $placeholders = implode(',', array_fill(0, count($ids), '?'));
+                $params = array_merge([$now, $user['id']], array_map('strval', $ids));
+                $this->pdo->prepare(
+                    "UPDATE notifications SET read_at = ? WHERE user_id = ? AND id IN ({$placeholders})"
+                )->execute($params);
+            } else {
+                $companyId = trim((string) ($body['companyId'] ?? ''));
+                if ($companyId !== '') {
+                    $this->pdo->prepare(
+                        'UPDATE notifications SET read_at = ? WHERE user_id = ? AND company_id = ? AND read_at IS NULL'
+                    )->execute([$now, $user['id'], $companyId]);
+                } else {
+                    $this->pdo->prepare(
+                        'UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL'
+                    )->execute([$now, $user['id']]);
+                }
+            }
+        } catch (Throwable $e) {
+            // ignore missing table
+        }
+        Response::json(['ok' => true]);
+    }
+
+    /** @param list<array<string,mixed>> $parts */
+    private function deductPartsStock(string $companyId, array $parts, string $now): void
+    {
+        $stockStmt = $this->pdo->prepare(
+            'UPDATE items SET stock_qty = stock_qty - ?, updated_at = ? WHERE id = ? AND company_id = ?'
+        );
+        foreach ($parts as $part) {
+            $itemId = trim((string) ($part['itemId'] ?? ''));
+            $qty = (float) ($part['qty'] ?? 0);
+            if ($itemId === '' || $qty <= 0) {
+                continue;
+            }
+            $stockStmt->execute([$qty, $now, $itemId, $companyId]);
+        }
+    }
+
+    private function serviceCallToInvoice(string $id): void
+    {
+        $user = Auth::requireUser($this->pdo, $this->config);
+        // Service workflow handoff — any staff with service_calls update can generate the invoice.
+        Auth::requirePermission($this->pdo, $user, 'service_calls', 'update');
+
+        $stmt = $this->pdo->prepare('SELECT * FROM service_calls WHERE id = ?');
+        $stmt->execute([$id]);
+        $call = $stmt->fetch();
+        if (!$call) {
+            Response::error('Service call not found', 404);
+        }
+        if (!empty($call['invoice_doc_id'])) {
+            Response::json([
+                'serviceCall' => $this->fetchServiceCall($id),
+                'transactionId' => $call['invoice_doc_id'],
+                'alreadyInvoiced' => true,
+            ]);
+        }
+
+        $companyId = (string) $call['company_id'];
+        $estimateLines = Helpers::decodeJsonList($call['estimate_lines_json'] ?? null);
+        $partsUsed = Helpers::decodeJsonList($call['parts_used_json'] ?? null);
+        $lines = [];
+        foreach ($estimateLines as $line) {
+            if (!is_array($line)) {
+                continue;
+            }
+            $qty = (float) ($line['qty'] ?? 0);
+            $rate = (float) ($line['unitPrice'] ?? $line['rate'] ?? 0);
+            $tax = (float) ($line['taxPercent'] ?? 0);
+            $name = trim((string) ($line['description'] ?? $line['name'] ?? 'Service'));
+            if ($qty <= 0 && $rate <= 0) {
+                continue;
+            }
+            $lines[] = [
+                'itemId' => $this->nullable($line['itemId'] ?? null),
+                'name' => $name !== '' ? $name : 'Service',
+                'qty' => $qty > 0 ? $qty : 1,
+                'rate' => $rate,
+                'taxPercent' => $tax,
+                'amount' => ($qty > 0 ? $qty : 1) * $rate * (1 + $tax / 100),
+            ];
+        }
+        foreach ($partsUsed as $part) {
+            if (!is_array($part)) {
+                continue;
+            }
+            $qty = (float) ($part['qty'] ?? 0);
+            $rate = (float) ($part['unitPrice'] ?? $part['rate'] ?? 0);
+            $tax = (float) ($part['taxPercent'] ?? 0);
+            $name = trim((string) ($part['name'] ?? $part['description'] ?? 'Part'));
+            if ($qty <= 0) {
+                continue;
+            }
+            $lines[] = [
+                'itemId' => $this->nullable($part['itemId'] ?? null),
+                'name' => $name !== '' ? $name : 'Part',
+                'qty' => $qty,
+                'rate' => $rate,
+                'taxPercent' => $tax,
+                'amount' => $qty * $rate * (1 + $tax / 100),
+            ];
+        }
+        if (!$lines) {
+            Response::error('Add estimate lines or parts used before generating an invoice', 400);
+        }
+
+        $discount = (float) ($call['estimate_discount'] ?? 0);
+        $subtotal = 0.0;
+        $taxTotal = 0.0;
+        foreach ($lines as $line) {
+            $base = (float) $line['qty'] * (float) $line['rate'];
+            $subtotal += $base;
+            $taxTotal += $base * (float) $line['taxPercent'] / 100;
+        }
+        if ($discount > 0) {
+            $subtotal = max(0, $subtotal - $discount);
+        }
+        $grandTotal = $subtotal + $taxTotal;
+        $now = Helpers::now();
+        $date = gmdate('Y-m-d');
+        $countStmt = $this->pdo->prepare('SELECT COUNT(*) FROM transactions WHERE company_id = ? AND type = ?');
+        $countStmt->execute([$companyId, 'sale']);
+        $number = 'INV-' . (1000 + (int) $countStmt->fetchColumn() + 1);
+        $txnId = Helpers::cuid('txn');
+        $notes = 'Service call ' . ($call['call_no'] ?? '') . ' · ' . trim((string) ($call['description'] ?? ''));
+
+        try {
+            $this->pdo->beginTransaction();
+            $this->pdo->prepare(
+                'INSERT INTO transactions (
+                    id, company_id, type, number, date, party_id, payment_type_id, notes,
+                    subtotal, tax_total, grand_total, created_at, updated_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            )->execute([
+                $txnId,
+                $companyId,
+                'sale',
+                $number,
+                $date,
+                $call['customer_id'],
+                null,
+                $notes,
+                $subtotal,
+                $taxTotal,
+                $grandTotal,
+                $now,
+                $now,
+            ]);
+            $lineStmt = $this->pdo->prepare(
+                'INSERT INTO line_items (id, company_id, transaction_id, item_id, name, qty, rate, tax_percent, amount)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            );
+            $stockStmt = $this->pdo->prepare('UPDATE items SET stock_qty = stock_qty + ?, updated_at = ? WHERE id = ?');
+            foreach ($lines as $line) {
+                $lineStmt->execute([
+                    Helpers::cuid('li'),
+                    $companyId,
+                    $txnId,
+                    $line['itemId'],
+                    $line['name'],
+                    $line['qty'],
+                    $line['rate'],
+                    $line['taxPercent'],
+                    $line['amount'],
+                ]);
+                if (!empty($line['itemId'])) {
+                    $stockStmt->execute([-((float) $line['qty']), $now, $line['itemId']]);
+                }
+            }
+            $saved = $this->pdo->prepare('SELECT * FROM transactions WHERE id = ?');
+            $saved->execute([$txnId]);
+            $savedRow = $saved->fetch();
+            if ($savedRow) {
+                (new Docs($this->pdo, $this->config))->ensureConfirmedSaleOrder($savedRow, $this->linesFor($txnId));
+            }
+            $this->pdo->prepare(
+                'UPDATE service_calls SET invoice_doc_id = ?, status = ?, completed_at = COALESCE(completed_at, ?), updated_at = ? WHERE id = ?'
+            )->execute([$txnId, 'billing', $now, $now, $id]);
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            Response::error('Failed to create invoice', 500, $e->getMessage());
+        }
+
+        Response::json([
+            'serviceCall' => $this->fetchServiceCall($id),
+            'transactionId' => $txnId,
+            'alreadyInvoiced' => false,
+        ]);
     }
 
     private function nullable($value): ?string

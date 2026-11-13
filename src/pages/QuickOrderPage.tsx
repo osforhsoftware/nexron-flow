@@ -200,6 +200,13 @@ export function QuickOrderPage() {
       </header>
 
       <div className="content quick-order-page">
+        <div className="quick-order-mobile-toolbar">
+          <p className="muted">Fast sale entry · {company?.name}</p>
+          <Link className="btn btn-ghost touch-target" to="/sales">
+            Full invoice
+          </Link>
+        </div>
+
         {savedNumber ? (
           <div className="quick-order-success">
             <Check size={18} />

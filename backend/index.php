@@ -18,6 +18,7 @@ require_once __DIR__ . "/src/Roles.php";
 require_once __DIR__ . "/src/Auth.php";
 require_once __DIR__ . "/src/Docs.php";
 require_once __DIR__ . "/src/ApiRbac.php";
+require_once __DIR__ . "/src/Backup.php";
 require_once __DIR__ . "/src/Api.php";
 
 try {

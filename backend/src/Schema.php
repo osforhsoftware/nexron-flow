@@ -40,11 +40,18 @@ final class Schema
     {
         try {
             $pdo->query('SELECT user_type FROM users LIMIT 0');
+            $pdo->query('SELECT is_staff FROM users LIMIT 0');
             $pdo->query('SELECT settings_json FROM companies LIMIT 0');
             $pdo->query('SELECT stock_effect FROM transactions LIMIT 0');
             $pdo->query('SELECT stock_posted_at FROM docs LIMIT 0');
             $pdo->query('SELECT id FROM equipment LIMIT 0');
             $pdo->query('SELECT id FROM service_calls LIMIT 0');
+            $pdo->query('SELECT qa_decision FROM service_calls LIMIT 0');
+            $pdo->query('SELECT inspector_signature FROM service_calls LIMIT 0');
+            $pdo->query('SELECT work_details FROM service_calls LIMIT 0');
+            $pdo->query('SELECT requested_parts FROM service_calls LIMIT 0');
+            $pdo->query('SELECT id FROM service_visits LIMIT 0');
+            $pdo->query('SELECT id FROM notifications LIMIT 0');
             $pdo->query('SELECT id FROM modules LIMIT 0');
             return true;
         } catch (PDOException $e) {
@@ -335,6 +342,27 @@ CREATE TABLE IF NOT EXISTS service_calls (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 SQL,
             <<<SQL
+CREATE TABLE IF NOT EXISTS service_visits (
+  id VARCHAR(64) PRIMARY KEY,
+  company_id VARCHAR(64) NOT NULL,
+  service_call_id VARCHAR(64) NOT NULL,
+  visit_no VARCHAR(64) NOT NULL,
+  visit_date VARCHAR(20) NOT NULL,
+  assigned_user_id VARCHAR(64) NULL,
+  assigned_name VARCHAR(200) NULL,
+  status VARCHAR(40) NOT NULL DEFAULT 'planned',
+  work_done TEXT NULL,
+  notes TEXT NULL,
+  created_at VARCHAR(40) NOT NULL,
+  updated_at VARCHAR(40) NOT NULL,
+  CONSTRAINT fk_service_visits_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
+  CONSTRAINT fk_service_visits_call FOREIGN KEY (service_call_id) REFERENCES service_calls(id) ON DELETE CASCADE,
+  UNIQUE KEY uniq_service_visits_no (service_call_id, visit_no),
+  INDEX idx_service_visits_call (service_call_id, visit_date),
+  INDEX idx_service_visits_company (company_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+SQL,
+            <<<SQL
 CREATE TABLE IF NOT EXISTS modules (
   id VARCHAR(64) PRIMARY KEY,
   name VARCHAR(120) NOT NULL,
@@ -481,6 +509,66 @@ SQL,
 
         // RBAC: super-admin flag (1 = bypass all permission checks).
         self::addColumnIfMissing($pdo, 'users', 'user_type', 'TINYINT NOT NULL DEFAULT 0');
+        self::addColumnIfMissing($pdo, 'users', 'is_staff', 'TINYINT(1) NOT NULL DEFAULT 0');
+
+        // Service call lifecycle (MMS-style stages) — additive, backward compatible.
+        self::addColumnIfMissing($pdo, 'service_calls', 'equipment_ids_json', 'LONGTEXT NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'inspector_id', 'VARCHAR(64) NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'inspector_name', 'VARCHAR(200) NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'inspection_date', 'VARCHAR(40) NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'findings', 'TEXT NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'severity', 'VARCHAR(20) NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'recommendation', 'VARCHAR(80) NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'recommendation_notes', 'TEXT NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'inspection_photos_json', 'LONGTEXT NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'work_required', 'TEXT NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'work_details', 'TEXT NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'requested_parts', 'TEXT NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'inspector_signature', 'LONGTEXT NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'engineer_user_id', 'VARCHAR(64) NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'engineer_name', 'VARCHAR(200) NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'estimate_lines_json', 'LONGTEXT NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'estimate_discount', 'DOUBLE NOT NULL DEFAULT 0');
+        self::addColumnIfMissing($pdo, 'service_calls', 'estimate_notes', 'TEXT NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'estimate_finalized_at', 'VARCHAR(40) NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'parts_used_json', 'LONGTEXT NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'service_photos_json', 'LONGTEXT NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'customer_handoff', 'TINYINT(1) NOT NULL DEFAULT 0');
+        self::addColumnIfMissing($pdo, 'service_calls', 'customer_receiver_name', 'VARCHAR(200) NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'customer_signature', 'LONGTEXT NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'qa_decision', 'VARCHAR(20) NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'qa_remarks', 'TEXT NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'qa_verified_by', 'VARCHAR(64) NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'qa_verified_by_name', 'VARCHAR(200) NULL');
+        self::addColumnIfMissing($pdo, 'service_calls', 'qa_verified_at', 'VARCHAR(40) NULL');
+
+        try {
+            $pdo->exec("UPDATE service_calls SET status = 'inspection' WHERE status = 'assigned'");
+            $pdo->exec("UPDATE service_calls SET status = 'billing' WHERE status = 'done'");
+        } catch (PDOException $e) {
+            // ignore
+        }
+
+        try {
+            $pdo->exec(<<<SQL
+CREATE TABLE IF NOT EXISTS notifications (
+  id VARCHAR(64) PRIMARY KEY,
+  company_id VARCHAR(64) NOT NULL,
+  user_id VARCHAR(64) NOT NULL,
+  title VARCHAR(255) NOT NULL,
+  body TEXT NULL,
+  link VARCHAR(255) NULL,
+  kind VARCHAR(40) NULL,
+  ref_id VARCHAR(64) NULL,
+  read_at VARCHAR(40) NULL,
+  created_at VARCHAR(40) NOT NULL,
+  INDEX idx_notifications_user (user_id, created_at),
+  INDEX idx_notifications_company (company_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+SQL);
+        } catch (PDOException $e) {
+            // ignore
+        }
 
         if (class_exists('Rbac')) {
             Rbac::ensureCatalog($pdo);

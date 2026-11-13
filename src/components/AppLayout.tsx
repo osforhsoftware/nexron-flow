@@ -5,7 +5,6 @@ import {
   ChevronDown,
   ChevronRight,
   CircleDollarSign,
-  FileText,
   Home,
   LogOut,
   Menu,
@@ -16,7 +15,6 @@ import {
   Search,
   ShoppingCart,
   Settings,
-  Shield,
   Store,
   Headphones,
   Users,
@@ -27,13 +25,14 @@ import {
 } from "lucide-react";
 import { BrandLogo } from "./BrandLogo";
 import { CommandPalette } from "./CommandPalette";
+import { Modal } from "./Modal";
 import { useApp } from "../lib/AppContext";
 import { canOpenRoute, prefersQuickOrder, ROLE_LABELS } from "../lib/roles";
 import { useIsMobileShell } from "../lib/useMediaQuery";
 
 const SIDEBAR_KEY = "ledgerly.sidebar.collapsed";
 
-type NavChild = { label: string; to: string; create?: boolean };
+type NavChild = { label: string; to: string; create?: boolean; action?: "logout" };
 
 const navGroups: Array<{
   label: string;
@@ -49,7 +48,6 @@ const navGroups: Array<{
     to: "/items",
     children: [
       { label: "Products", to: "/items/products" },
-      { label: "Services", to: "/items/services" },
       { label: "Equipment", to: "/items/equipment" },
     ],
   },
@@ -86,14 +84,29 @@ const navGroups: Array<{
   },
   { label: "Cash & Bank", icon: Wallet, to: "/payments" },
   { label: "Reports", icon: BarChart3, to: "/reports" },
-  { label: "Roles", icon: Shield, to: "/roles" },
   { label: "Utilities", icon: Wrench, to: "/utilities" },
-  { label: "Settings", icon: Settings, to: "/settings" },
+  {
+    label: "Settings",
+    icon: Settings,
+    to: "/settings",
+    children: [{ label: "Logout", to: "/settings", action: "logout" }],
+  },
 ];
 
 function pathMatches(pathname: string, to: string) {
   if (to === "/") return pathname === "/";
   return pathname === to || pathname.startsWith(`${to}/`);
+}
+
+function tabIsActive(pathname: string, childTo: string, siblings: NavChild[]) {
+  const path = childTo.split("?")[0];
+  if (pathname === path) return true;
+  if (!pathname.startsWith(`${path}/`)) return false;
+  return !siblings.some((sibling) => {
+    const siblingPath = sibling.to.split("?")[0];
+    if (siblingPath === path || siblingPath.length <= path.length) return false;
+    return pathname === siblingPath || pathname.startsWith(`${siblingPath}/`);
+  });
 }
 
 export function AppLayout() {
@@ -103,7 +116,9 @@ export function AppLayout() {
   const isMobile = useIsMobileShell();
   const search = new URLSearchParams(location.search);
   const createMode = search.get("create") === "1" || Boolean(search.get("txn"));
-  const [expanded, setExpanded] = useState<string[]>(["Sale", "Items", "Purchase", "Service"]);
+  const [expanded, setExpanded] = useState<string[]>(["Sale", "Items", "Purchase", "Service", "Settings"]);
+  const [logoutOpen, setLogoutOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem(SIDEBAR_KEY) === "1";
@@ -118,8 +133,8 @@ export function AppLayout() {
   const visibleNav = navGroups.filter((item) => {
     if (canOpenRoute(session ?? undefined, item.to)) return true;
     return (
-      item.children?.some((child) =>
-        canOpenRoute(session ?? undefined, child.to.split("?")[0]),
+      item.children?.some(
+        (child) => !child.action && canOpenRoute(session ?? undefined, child.to.split("?")[0]),
       ) ?? false
     );
   });
@@ -127,15 +142,43 @@ export function AppLayout() {
   const showPurchaseQuick = canAccess("purchases") || canAccess("purchase_bills");
   const showQuickOrder = prefersQuickOrder(session) && showSaleQuick;
 
-  const pageTitle = useMemo(() => {
-    const hit = visibleNav.find(
-      (item) =>
-        pathMatches(location.pathname, item.to) ||
-        item.children?.some((c) => pathMatches(location.pathname, c.to.split("?")[0])),
+  const activeGroup = useMemo(() => {
+    if (location.pathname.startsWith("/sales/quick")) {
+      return visibleNav.find((item) => item.label === "Sale") ?? null;
+    }
+    const scored = visibleNav
+      .map((item) => {
+        const childHit = item.children?.find(
+          (c) => !c.action && pathMatches(location.pathname, c.to.split("?")[0]),
+        );
+        const selfHit = pathMatches(location.pathname, item.to);
+        if (!selfHit && !childHit) return null;
+        const score = childHit
+          ? childHit.to.split("?")[0].length
+          : item.to === "/"
+            ? 1
+            : item.to.length;
+        return { item, score };
+      })
+      .filter((row): row is { item: (typeof visibleNav)[number]; score: number } => Boolean(row));
+    scored.sort((a, b) => b.score - a.score);
+    return scored[0]?.item ?? null;
+  }, [visibleNav, location.pathname]);
+
+  const sectionTabs = useMemo(() => {
+    if (!activeGroup?.children?.length) return [];
+    return activeGroup.children.filter(
+      (child) => !child.action && canOpenRoute(session ?? undefined, child.to.split("?")[0]),
     );
+  }, [activeGroup, session]);
+
+  const pageTitle = useMemo(() => {
     if (location.pathname.startsWith("/sales/quick")) return "Quick Order";
-    return hit?.label ?? company?.name ?? "Home";
-  }, [visibleNav, location.pathname, company?.name]);
+    const child = sectionTabs.find((c) => pathMatches(location.pathname, c.to.split("?")[0]));
+    return child?.label ?? activeGroup?.label ?? company?.name ?? "Home";
+  }, [sectionTabs, activeGroup, location.pathname, company?.name]);
+
+  const isHome = location.pathname === "/";
 
   const bottomTabs = useMemo(() => {
     const tabs: Array<{ to: string; label: string; icon: typeof Home; end?: boolean }> = [];
@@ -220,9 +263,19 @@ export function AppLayout() {
     });
   }
 
+  function askLogout() {
+    setLogoutOpen(true);
+  }
+
   async function signOut() {
-    await logout();
-    navigate("/login");
+    setLoggingOut(true);
+    try {
+      await logout();
+      setLogoutOpen(false);
+      navigate("/login");
+    } finally {
+      setLoggingOut(false);
+    }
   }
 
   function renderNav(opts: { mobileDrawer?: boolean }) {
@@ -231,8 +284,8 @@ export function AppLayout() {
       <div className="nav-scroll">
         {visibleNav.map(({ to, label, icon: Icon, children }) => {
           const childActive =
-            children?.some((child) =>
-              pathMatches(location.pathname, child.to.split("?")[0]),
+            children?.some(
+              (child) => !child.action && pathMatches(location.pathname, child.to.split("?")[0]),
             ) ?? false;
           const isOpen = !hideChildren && expanded.includes(label);
           return (
@@ -259,6 +312,22 @@ export function AppLayout() {
               {children && isOpen ? (
                 <div className="nav-children">
                   {children.map((child) => {
+                    if (child.action === "logout") {
+                      return (
+                        <div className="nav-child-row" key="logout">
+                          <button
+                            type="button"
+                            className="nav-child-logout"
+                            onClick={() => {
+                              if (opts.mobileDrawer) setDrawerOpen(false);
+                              askLogout();
+                            }}
+                          >
+                            {child.label}
+                          </button>
+                        </div>
+                      );
+                    }
                     const createTo = child.create
                       ? child.to.includes("?")
                         ? `${child.to}&create=1`
@@ -350,12 +419,9 @@ export function AppLayout() {
             {renderNav({})}
 
             <div className="sidebar-footer">
-              <button className="sidebar-signout" type="button" onClick={() => void signOut()}>
+              <button className="sidebar-signout" type="button" onClick={askLogout} title="Logout">
                 <LogOut size={15} />
-                Sign out
-                {session?.name
-                  ? ` · ${session.name.split(" ")[0]}${session.role ? ` (${ROLE_LABELS[session.role]})` : ""}`
-                  : ""}
+                {!collapsed ? <span>Logout</span> : null}
               </button>
             </div>
           </aside>
@@ -363,7 +429,7 @@ export function AppLayout() {
 
         <div className={`main-area${createMode ? " create-mode" : ""}`}>
           {isMobile && !createMode ? (
-            <header className="mobile-topbar">
+            <header className={`mobile-topbar${isHome ? " mobile-topbar-home" : ""}`}>
               <button
                 type="button"
                 className="mobile-icon-btn touch-target"
@@ -374,13 +440,20 @@ export function AppLayout() {
                 <Menu size={20} />
               </button>
               <div className="mobile-topbar-center">
-                <button type="button" className="mobile-business" onClick={() => navigate("/settings")}>
-                  <span className="mobile-business-dot" />
-                  <span className="mobile-business-name">{company?.name || "Business"}</span>
-                </button>
-                <small className="mobile-page-label">{pageTitle}</small>
+                {isHome ? (
+                  <span className="mobile-page-label">Home</span>
+                ) : (
+                  <>
+                    <span className="mobile-business-name">{activeGroup?.label || pageTitle}</span>
+                    <small className="mobile-page-label">
+                      {pageTitle === activeGroup?.label ? "" : pageTitle}
+                    </small>
+                  </>
+                )}
               </div>
-              {showSaleQuick || showPurchaseQuick ? (
+              {isHome ? (
+                <span className="mobile-topbar-spacer" aria-hidden />
+              ) : showSaleQuick || showPurchaseQuick ? (
                 <button
                   type="button"
                   className="mobile-icon-btn touch-target"
@@ -417,17 +490,46 @@ export function AppLayout() {
                     <PanelLeftOpen size={16} />
                   </button>
                 ) : null}
-                <button type="button" className="business-name" onClick={() => navigate("/settings")}>
-                  <span /> {company?.name || "Enter Business Name"}
-                </button>
+                {isHome ? (
+                  <button type="button" className="business-name" onClick={() => navigate("/settings")}>
+                    <span /> {company?.name || "Enter Business Name"}
+                  </button>
+                ) : (
+                  <nav className="page-context-nav" aria-label="Page">
+                    <div className="page-context-tabs" role="tablist">
+                      {(sectionTabs.length > 0
+                        ? sectionTabs
+                        : activeGroup
+                          ? [{ label: activeGroup.label, to: activeGroup.to }]
+                          : [{ label: pageTitle, to: location.pathname }]
+                      ).map((child) => {
+                        const active =
+                          sectionTabs.length > 0
+                            ? tabIsActive(location.pathname, child.to, sectionTabs)
+                            : true;
+                        return (
+                          <Link
+                            key={child.to + child.label}
+                            to={child.to}
+                            role="tab"
+                            aria-selected={active}
+                            className={`page-context-tab${active ? " active" : ""}`}
+                          >
+                            {child.label}
+                          </Link>
+                        );
+                      })}
+                    </div>
+                  </nav>
+                )}
               </div>
               <div className="business-actions">
-                {showSaleQuick ? (
+                {isHome && showSaleQuick ? (
                   <button className="quick-sale" type="button" onClick={() => navigate("/sales?create=1")}>
                     <Plus size={14} /> Add Sale
                   </button>
                 ) : null}
-                {showPurchaseQuick ? (
+                {isHome && showPurchaseQuick ? (
                   <button
                     className="quick-purchase"
                     type="button"
@@ -436,12 +538,11 @@ export function AppLayout() {
                     <Plus size={14} /> Add Purchase
                   </button>
                 ) : null}
-                {canAccess("utilities") ? (
+                {isHome && canAccess("utilities") ? (
                   <button className="quick-more" type="button" onClick={() => navigate("/utilities")}>
                     <CircleDollarSign size={14} /> Add More
                   </button>
                 ) : null}
-                <FileText size={16} />
               </div>
             </div>
           ) : null}
@@ -453,6 +554,33 @@ export function AppLayout() {
       </div>
 
       <CommandPalette open={commandOpen} onClose={() => setCommandOpen(false)} />
+
+      {logoutOpen ? (
+        <Modal
+          title="Log out"
+          className="modal-confirm"
+          onClose={() => {
+            if (!loggingOut) setLogoutOpen(false);
+          }}
+          footer={
+            <>
+              <button
+                className="btn btn-ghost"
+                type="button"
+                disabled={loggingOut}
+                onClick={() => setLogoutOpen(false)}
+              >
+                Cancel
+              </button>
+              <button className="btn btn-primary" type="button" disabled={loggingOut} onClick={() => void signOut()}>
+                {loggingOut ? "Logging out…" : "Log out"}
+              </button>
+            </>
+          }
+        >
+          <p>Are you sure you want to log out of this account?</p>
+        </Modal>
+      ) : null}
 
       {isMobile ? (
         <>
@@ -511,7 +639,7 @@ export function AppLayout() {
                   <Zap size={16} /> Quick Order Entry
                 </Link>
               ) : null}
-              <button type="button" className="mobile-drawer-action danger" onClick={() => void signOut()}>
+              <button type="button" className="mobile-drawer-action danger" onClick={askLogout}>
                 <LogOut size={16} /> Sign out
               </button>
             </div>

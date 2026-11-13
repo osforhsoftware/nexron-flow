@@ -23,6 +23,7 @@ export const ROUTE_MODULE: Record<string, string> = {
   "/items/equipment": "equipment",
   "/service": "service_calls",
   "/service/calls": "service_calls",
+  "/service/calls/new": "service_calls",
   "/sales": "new_invoice",
   "/sales/quick": "new_invoice",
   "/sales/quotations": "quotations",

@@ -152,10 +152,10 @@ export function DashboardPage() {
 
   return (
     <>
-      <header className="topbar">
+      <header className="topbar dash-home-topbar">
         <div>
           <h1>Home</h1>
-          <p className="muted">
+          <p className="muted dash-home-company">
             {company?.name}
             {roleLabel ? ` · ${roleLabel}` : ""} ·{" "}
             {homeProfile === "sales"
@@ -167,7 +167,7 @@ export function DashboardPage() {
                   : "business dashboard"}
           </p>
         </div>
-        <div className="topbar-actions">
+        <div className="topbar-actions dash-home-actions">
           {showQuickOrder ? (
             <Link className="btn btn-primary" to="/sales/quick">
               <Zap size={14} /> Quick Order
@@ -611,8 +611,8 @@ export function DashboardPage() {
                   <ClipboardList size={16} /> Settings
                 </Link>
               ) : null}
-              {canAccess("roles") ? (
-                <Link to="/roles" className="dash-tool-link">
+              {canAccess("roles") || canAccess("users") ? (
+                <Link to="/settings?tab=roles" className="dash-tool-link">
                   <ClipboardList size={16} /> Roles & access
                 </Link>
               ) : null}

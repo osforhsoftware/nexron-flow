@@ -94,7 +94,7 @@ export interface Company {
   defaultTerms?: string | null;
   /** Starting pattern, e.g. NEX-IT-001. Next tags increment: NEX-IT-002… */
   assetTagStart?: string | null;
-  /** Persisted ERP settings (transaction, accounting, print, etc.) */
+  /** Persisted settings (transaction, print, party, item, and similar). */
   settings?: CompanySettings | null;
   createdAt: string;
 }
@@ -222,9 +222,44 @@ export interface Equipment {
   updatedAt?: string | null;
 }
 
-export type ServiceCallStatus = "open" | "assigned" | "in_progress" | "done" | "closed";
-export type ServiceCallType = "Repair" | "Maintenance" | "Installation" | "Other";
-export type ServiceCallPriority = "normal" | "high";
+/** 6-stage pipeline. Legacy `assigned`→inspection, `done`→billing. */
+export type ServiceCallStatus =
+  | "open"
+  | "inspection"
+  | "estimate"
+  | "in_progress"
+  | "qa"
+  | "billing"
+  | "closed"
+  | "assigned" // legacy
+  | "done"; // legacy
+export type ServiceCallType = "Repair" | "Maintenance" | "Installation" | "Inspection" | "Other";
+export type ServiceCallPriority = "normal" | "high" | "urgent";
+export type ServiceVisitStatus = "planned" | "in_progress" | "completed";
+export type ServiceSeverity = "Low" | "Medium" | "High" | "Critical";
+export type ServiceRecommendation =
+  | "Repair"
+  | "Part Replacement"
+  | "Service/Calibration"
+  | "Unrepairable";
+
+export interface ServiceLineItem {
+  id?: string;
+  itemId?: string | null;
+  name?: string;
+  description?: string;
+  qty: number;
+  unitPrice: number;
+  taxPercent: number;
+  total?: number;
+}
+
+export interface ServicePhoto {
+  url: string;
+  name?: string;
+  caption?: string;
+  kind?: "before" | "after" | "inspection" | "doc" | string;
+}
 
 export interface ServiceCall {
   id: string;
@@ -234,16 +269,73 @@ export interface ServiceCall {
   customerName: string;
   equipmentId?: string | null;
   equipmentName?: string | null;
+  equipmentIds?: string[];
   type: ServiceCallType | string;
   priority: ServiceCallPriority | string;
   status: ServiceCallStatus | string;
   description: string;
   assignedUserId?: string | null;
   assignedName?: string | null;
+  inspectorId?: string | null;
+  inspectorName?: string | null;
+  inspectionDate?: string | null;
+  findings?: string | null;
+  severity?: ServiceSeverity | string | null;
+  recommendation?: ServiceRecommendation | string | null;
+  recommendationNotes?: string | null;
+  workRequired?: string | null;
+  workDetails?: string | null;
+  requestedParts?: string | null;
+  inspectorSignature?: string | null;
+  inspectionPhotos?: ServicePhoto[];
+  engineerUserId?: string | null;
+  engineerName?: string | null;
+  estimateLines?: ServiceLineItem[];
+  estimateDiscount?: number;
+  estimateNotes?: string | null;
+  estimateFinalizedAt?: string | null;
+  partsUsed?: ServiceLineItem[];
+  servicePhotos?: ServicePhoto[];
+  customerHandoff?: boolean;
+  customerReceiverName?: string | null;
+  customerSignature?: string | null;
+  qaDecision?: "pass" | "fail" | string | null;
+  qaRemarks?: string | null;
+  qaVerifiedBy?: string | null;
+  qaVerifiedByName?: string | null;
+  qaVerifiedAt?: string | null;
   scheduledFor?: string | null;
   notes?: string | null;
   invoiceDocId?: string | null;
   completedAt?: string | null;
+  createdAt: string;
+  updatedAt?: string | null;
+}
+
+export interface AppNotification {
+  id: string;
+  companyId: string;
+  userId: string;
+  title: string;
+  body?: string | null;
+  link?: string | null;
+  kind?: string | null;
+  refId?: string | null;
+  readAt?: string | null;
+  createdAt: string;
+}
+
+export interface ServiceVisit {
+  id: string;
+  companyId: string;
+  serviceCallId: string;
+  visitNo: string;
+  visitDate: string;
+  assignedUserId?: string | null;
+  assignedName?: string | null;
+  status: ServiceVisitStatus | string;
+  workDone?: string | null;
+  notes?: string | null;
   createdAt: string;
   updatedAt?: string | null;
 }

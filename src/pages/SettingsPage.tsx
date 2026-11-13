@@ -1,12 +1,13 @@
 import type { FormEvent, ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
-import { X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { LogOut, X } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useApp } from "../lib/AppContext";
 import { ROLE_LABELS } from "../lib/roles";
 import { Modal } from "../components/Modal";
 import { SettingCheck, Toggle } from "../components/UI";
-import { api } from "../lib/api";
-import type { PaymentType } from "../db/types";
+import { RolesPage } from "./RolesPage";
+import { UsersStaffSection } from "./UsersStaffSection";
 import {
   COMPANY_CURRENCIES,
   COMPANY_ORIGINS,
@@ -21,22 +22,19 @@ import {
   type TaxType,
 } from "../lib/companyLocale";
 import {
-  LEDGER_FIELDS,
-  applyFyPreset,
   defaultCompanySettings,
-  financialYearRange,
   mergeCompanySettings,
-  validateAccountingSettings,
   validatePartySettings,
   validateServiceReminderSettings,
   validateTransactionSettings,
   type CompanySettings,
-  type FyPreset,
-  type LedgerMapKey,
 } from "../lib/companySettings";
 
 const sections = [
   "General",
+  "Users",
+  "Staff",
+  "Roles & Permissions",
   "Transaction",
   "Print",
   "Taxes",
@@ -44,14 +42,21 @@ const sections = [
   "Party",
   "Item",
   "Service Reminders",
-  "Accounting",
   "Multi Currency",
 ] as const;
 
 type Section = (typeof sections)[number];
 
+const TAB_SECTIONS: Record<string, Section> = {
+  users: "Users",
+  staff: "Staff",
+  roles: "Roles & Permissions",
+};
+
 export function SettingsPage() {
-  const { company, updateCompany, session } = useApp();
+  const { company, updateCompany, session, logout } = useApp();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [form, setForm] = useState({
     name: "",
     phone: "",
@@ -67,13 +72,22 @@ export function SettingsPage() {
     defaultTerms: "",
     assetTagStart: "EQ-0001",
   });
-  const [settings, setSettings] = useState<CompanySettings>(() => defaultCompanySettings("AE"));
-  const [accounts, setAccounts] = useState<PaymentType[]>([]);
+  const [settings, setSettings] = useState<CompanySettings>(() => defaultCompanySettings());
   const [saved, setSaved] = useState(false);
   const [sectionErrors, setSectionErrors] = useState<string[]>([]);
-  const [section, setSection] = useState<Section>("Accounting");
+  const [logoutOpen, setLogoutOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [section, setSection] = useState<Section>(() => {
+    const tab = searchParams.get("tab")?.toLowerCase() ?? "";
+    return TAB_SECTIONS[tab] ?? "General";
+  });
   const [customFields, setCustomFields] = useState(false);
   const origin = originOf(form.country);
+
+  useEffect(() => {
+    const tab = searchParams.get("tab")?.toLowerCase() ?? "";
+    if (TAB_SECTIONS[tab]) setSection(TAB_SECTIONS[tab]);
+  }, [searchParams]);
 
   useEffect(() => {
     if (!company) return;
@@ -93,33 +107,8 @@ export function SettingsPage() {
       defaultTerms: company.defaultTerms ?? "",
       assetTagStart: company.assetTagStart ?? "EQ-0001",
     });
-    setSettings(mergeCompanySettings(company.settings, country));
+    setSettings(mergeCompanySettings(company.settings));
   }, [company]);
-
-  useEffect(() => {
-    if (!company?.id) return;
-    let cancelled = false;
-    void api.payments
-      .accounts(company.id)
-      .then((res) => {
-        if (!cancelled) setAccounts(res.accounts ?? []);
-      })
-      .catch(() => {
-        if (!cancelled) setAccounts([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [company?.id]);
-
-  const cashAccounts = useMemo(
-    () => accounts.filter((a) => a.kind === "cash" || a.name.toLowerCase().includes("cash")),
-    [accounts],
-  );
-  const bankAccounts = useMemo(
-    () => accounts.filter((a) => a.kind === "bank" || !cashAccounts.some((c) => c.id === a.id)),
-    [accounts, cashAccounts],
-  );
 
   async function persistProfile(extra?: Partial<{ settings: CompanySettings }>) {
     if (!company) return;
@@ -178,6 +167,16 @@ export function SettingsPage() {
     setSectionErrors([]);
   }
 
+  async function confirmLogout() {
+    setLoggingOut(true);
+    try {
+      await logout();
+      navigate("/login");
+    } finally {
+      setLoggingOut(false);
+    }
+  }
+
   return (
     <div className="settings-shell">
       <aside className="settings-nav">
@@ -197,11 +196,51 @@ export function SettingsPage() {
             {item}
           </button>
         ))}
+        <button type="button" className="settings-logout" onClick={() => setLogoutOpen(true)}>
+          <LogOut size={14} />
+          Logout
+        </button>
       </aside>
       <main className="settings-main">
         <button className="settings-close" type="button">
           <X size={18} />
         </button>
+
+        {logoutOpen ? (
+          <Modal
+            title="Log out"
+            className="modal-confirm"
+            onClose={() => {
+              if (!loggingOut) setLogoutOpen(false);
+            }}
+            footer={
+              <>
+                <button
+                  className="btn btn-ghost"
+                  type="button"
+                  disabled={loggingOut}
+                  onClick={() => setLogoutOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary"
+                  type="button"
+                  disabled={loggingOut}
+                  onClick={() => void confirmLogout()}
+                >
+                  {loggingOut ? "Logging out…" : "Log out"}
+                </button>
+              </>
+            }
+          >
+            <p>Are you sure you want to log out of this account?</p>
+          </Modal>
+        ) : null}
+
+        {section === "Users" ? <UsersStaffSection mode="users" /> : null}
+        {section === "Staff" ? <UsersStaffSection mode="staff" /> : null}
+        {section === "Roles & Permissions" ? <RolesPage embedded /> : null}
 
         {section === "General" ? (
           <form className="settings-general" onSubmit={saveProfile}>
@@ -234,22 +273,6 @@ export function SettingsPage() {
                       country,
                       currency: defaultCurrencyForCountry(country),
                       taxType: defaultTaxTypeForCountry(country),
-                    });
-                    setSettings((current) => {
-                      const next = mergeCompanySettings(current, country);
-                      const fy = applyFyPreset(country === "IN" ? "india" : "calendar");
-                      return {
-                        ...next,
-                        accounting: {
-                          ...next.accounting,
-                          ...fy,
-                          ledgers: {
-                            ...next.accounting.ledgers,
-                            taxPayable: country === "IN" ? "Output GST" : "Output VAT",
-                            taxReceivable: country === "IN" ? "Input GST" : "Input VAT",
-                          },
-                        },
-                      };
                     });
                   }}
                 >
@@ -709,19 +732,6 @@ export function SettingsPage() {
           </div>
         ) : null}
 
-        {section === "Accounting" ? (
-          <AccountingSettingsPanel
-            accounting={settings.accounting}
-            cashAccounts={cashAccounts.length ? cashAccounts : accounts}
-            bankAccounts={bankAccounts.length ? bankAccounts : accounts}
-            errors={sectionErrors}
-            saved={saved}
-            onChange={(accounting) => patchSettings("accounting", accounting)}
-            onSave={() =>
-              void saveSettingsSection(settings, () => validateAccountingSettings(settings.accounting))
-            }
-          />
-        ) : null}
       </main>
       {customFields ? <CustomFields onClose={() => setCustomFields(false)} /> : null}
     </div>
@@ -745,200 +755,6 @@ function SettingsColumn({ title, children }: { title: string; children: ReactNod
       <h2>{title}</h2>
       {children}
     </section>
-  );
-}
-
-function AccountingSettingsPanel({
-  accounting,
-  cashAccounts,
-  bankAccounts,
-  errors,
-  saved,
-  onChange,
-  onSave,
-}: {
-  accounting: CompanySettings["accounting"];
-  cashAccounts: PaymentType[];
-  bankAccounts: PaymentType[];
-  errors: string[];
-  saved: boolean;
-  onChange: (value: CompanySettings["accounting"]) => void;
-  onSave: () => void;
-}) {
-  const fy = financialYearRange(
-    accounting.bookBeginningDate || new Date().toISOString().slice(0, 10),
-    accounting.fyStartMonth,
-    accounting.fyStartDay,
-  );
-
-  function setLedger(key: LedgerMapKey, value: string) {
-    onChange({
-      ...accounting,
-      ledgers: { ...accounting.ledgers, [key]: value },
-    });
-  }
-
-  function setPreset(preset: FyPreset) {
-    if (preset === "custom") {
-      onChange({ ...accounting, fyPreset: "custom" });
-      return;
-    }
-    onChange({ ...accounting, ...applyFyPreset(preset) });
-  }
-
-  return (
-    <div className="accounting-settings">
-      <header className="accounting-head">
-        <div>
-          <h2>Accounting Settings</h2>
-          <p className="muted">
-            Financial year and mandatory ledger mapping keep books consistent across sales, purchase, tax, and cash.
-          </p>
-        </div>
-        <div className="fy-badge">
-          <span>Current FY</span>
-          <strong>{fy.label}</strong>
-          <small>
-            {fy.start} → {fy.end}
-          </small>
-        </div>
-      </header>
-
-      <section className="accounting-card">
-        <h3>Financial year</h3>
-        <div className="form-grid">
-          <label className="field">
-            FY preset
-            <select
-              value={accounting.fyPreset}
-              onChange={(e) => setPreset(e.target.value as FyPreset)}
-            >
-              <option value="india">India (Apr–Mar)</option>
-              <option value="calendar">Calendar (Jan–Dec)</option>
-              <option value="custom">Custom</option>
-            </select>
-          </label>
-          <label className="field">
-            FY start month
-            <select
-              value={accounting.fyStartMonth}
-              disabled={accounting.fyPreset !== "custom"}
-              onChange={(e) =>
-                onChange({
-                  ...accounting,
-                  fyPreset: "custom",
-                  fyStartMonth: Number(e.target.value),
-                })
-              }
-            >
-              {Array.from({ length: 12 }, (_, i) => i + 1).map((month) => (
-                <option key={month} value={month}>
-                  {new Date(2000, month - 1, 1).toLocaleString("en", { month: "long" })}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            FY start day
-            <input
-              type="number"
-              min={1}
-              max={28}
-              disabled={accounting.fyPreset !== "custom"}
-              value={accounting.fyStartDay}
-              onChange={(e) =>
-                onChange({
-                  ...accounting,
-                  fyPreset: "custom",
-                  fyStartDay: Number(e.target.value) || 1,
-                })
-              }
-            />
-          </label>
-          <label className="field">
-            Books beginning from
-            <input
-              type="date"
-              value={accounting.bookBeginningDate}
-              onChange={(e) => onChange({ ...accounting, bookBeginningDate: e.target.value })}
-              required
-            />
-          </label>
-        </div>
-        <div className="settings-checks" style={{ marginTop: 10 }}>
-          <SettingCheck
-            label="Lock transactions outside current financial year"
-            checked={accounting.lockOutsideFy}
-            onChange={(checked) => onChange({ ...accounting, lockOutsideFy: checked })}
-            hint="Blocks posting outside the active FY until year is closed"
-          />
-          <SettingCheck
-            label="Prevent backdated entries before books beginning"
-            checked={accounting.preventBackdatedBeforeBooks}
-            onChange={(checked) => onChange({ ...accounting, preventBackdatedBeforeBooks: checked })}
-          />
-        </div>
-      </section>
-
-      <section className="accounting-card">
-        <h3>Ledger mapping (required)</h3>
-        <p className="muted" style={{ marginBottom: 12 }}>
-          Every posting key must map to a unique ledger name. Cash and bank can also link to payment accounts.
-        </p>
-        <div className="ledger-grid">
-          {LEDGER_FIELDS.map((field) => (
-            <label className="field" key={field.key}>
-              {field.label}
-              <em className="ledger-hint">{field.hint}</em>
-              <input
-                value={accounting.ledgers[field.key]}
-                onChange={(e) => setLedger(field.key, e.target.value)}
-                placeholder={field.label}
-                required
-              />
-            </label>
-          ))}
-        </div>
-        <div className="form-grid" style={{ marginTop: 16 }}>
-          <label className="field">
-            Default cash account
-            <select
-              value={accounting.defaultCashAccountId}
-              onChange={(e) => onChange({ ...accounting, defaultCashAccountId: e.target.value })}
-            >
-              <option value="">Select cash account</option>
-              {cashAccounts.map((account) => (
-                <option key={account.id} value={account.id}>
-                  {account.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            Default bank account
-            <select
-              value={accounting.defaultBankAccountId}
-              onChange={(e) => onChange({ ...accounting, defaultBankAccountId: e.target.value })}
-            >
-              <option value="">Select bank account</option>
-              {bankAccounts.map((account) => (
-                <option key={account.id} value={account.id}>
-                  {account.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-      </section>
-
-      <SectionErrors errors={errors} />
-      <div className="settings-actions">
-        <button className="btn btn-primary" type="button" onClick={onSave}>
-          Save Accounting Settings
-        </button>
-        {saved ? <span className="badge badge-ok">Saved</span> : null}
-      </div>
-    </div>
   );
 }
 

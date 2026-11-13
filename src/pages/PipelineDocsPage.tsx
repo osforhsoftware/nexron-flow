@@ -68,7 +68,7 @@ function emptyLine(taxPercent = "5"): DraftLine {
 }
 
 export function PipelineDocsPage({ docType }: { docType: PipelineDocType }) {
-  const { company, companies, switchCompany } = useApp();
+  const { company } = useApp();
   const companyId = company?.id;
   const taxOptions = taxOptionsForCompany(company);
   const defaultTaxPercent = defaultTaxPercentForTaxType(
@@ -793,22 +793,6 @@ export function PipelineDocsPage({ docType }: { docType: PipelineDocType }) {
             </select>
             <ChevronDown size={13} />
           </label>
-          {companies.length > 1 ? (
-            <label className="filter-pill sale-filter-select">
-              <select
-                value={companyId ?? ""}
-                onChange={(e) => void switchCompany(e.target.value)}
-                aria-label="Firm filter"
-              >
-                {companies.map((firm) => (
-                  <option value={firm.id} key={firm.id}>
-                    {firm.name}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown size={13} />
-            </label>
-          ) : null}
         </div>
         <div className="panel">
           <div className="table-wrap">

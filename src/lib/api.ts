@@ -9,10 +9,13 @@ import type {
   Party,
   PartyServiceType,
   PaymentType,
+  AppNotification,
   ServiceCall,
+  ServiceVisit,
   Transaction,
 } from "../db/types";
 import type { PermissionMap } from "./permissions";
+import { downloadBlob } from "./documentExport";
 import type { AppRole } from "./roles";
 
 type DocLineInput = {
@@ -63,6 +66,7 @@ export type ApiUser = {
   email?: string | null;
   role: AppRole;
   userType?: number;
+  isStaff?: boolean;
   isSuperAdmin?: boolean;
   modules: string[];
   permissions?: PermissionMap;
@@ -130,6 +134,19 @@ export type RolePermissionInput =
   | PermissionMap;
 
 type TxnWithLines = Transaction & { lineItems?: LineItem[] };
+
+export type CompanyBackupFile = {
+  id: string;
+  period: string;
+  bytes: number;
+  createdAt: string;
+};
+
+export type CompanyBackupState = {
+  autoMonthly: boolean;
+  updatedAt: string;
+  backups: CompanyBackupFile[];
+};
 
 function baseUrl(): string {
   return import.meta.env.VITE_API_URL?.replace(/\/$/, "") || "";
@@ -202,6 +219,36 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return data as T;
 }
 
+async function downloadApiFile(path: string, fallbackName: string): Promise<void> {
+  const headers = new Headers();
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl()}${path}`, { headers });
+  } catch {
+    throw new Error("PHP API offline. Start XAMPP Apache (mems-backend).");
+  }
+
+  if (!res.ok) {
+    const text = await res.text();
+    let message = `Request failed (${res.status})`;
+    try {
+      const data = text ? (JSON.parse(text) as { error?: string }) : {};
+      if (data.error) message = data.error;
+    } catch {
+      /* keep status message */
+    }
+    throw new Error(message);
+  }
+
+  const blob = await res.blob();
+  const disposition = res.headers.get("Content-Disposition") || "";
+  const match = /filename="([^"]+)"/.exec(disposition);
+  downloadBlob(blob, match?.[1] || fallbackName, "application/json");
+}
+
 export const api = {
   health: () => request<{ ok: boolean }>("/api/health"),
 
@@ -236,19 +283,45 @@ export const api = {
     remove: (id: string) => request<{ ok: boolean }>(`/api/roles/${id}`, { method: "DELETE" }),
   },
 
+  /** Roles + users for service-call assignment (service_calls read; not users/roles admin). */
+  staffAssignOptions: () =>
+    request<{
+      roles: Array<Pick<ApiRoleSummary, "id" | "name" | "status">>;
+      users: ApiUser[];
+    }>("/api/staff-assign-options"),
+
   users: {
     list: () => request<{ users: ApiUser[] }>("/api/users"),
     create: (body: {
       username: string;
       password: string;
       name: string;
-      role: AppRole;
+      role?: AppRole;
+      roleId?: string;
+      isStaff?: boolean;
       phone?: string;
       email?: string;
       userType?: number;
     }) =>
       request<{ user: ApiUser }>("/api/users", {
         method: "POST",
+        body: JSON.stringify(body),
+      }),
+    update: (
+      id: string,
+      body: {
+        username?: string;
+        password?: string;
+        name?: string;
+        role?: AppRole;
+        roleId?: string;
+        isStaff?: boolean;
+        phone?: string;
+        email?: string;
+      },
+    ) =>
+      request<{ user: ApiUser }>(`/api/users/${id}`, {
+        method: "PATCH",
         body: JSON.stringify(body),
       }),
     assignRole: (body: { userId: string; roleId: string }) =>
@@ -279,6 +352,26 @@ export const api = {
         method: "PATCH",
         body: JSON.stringify(body),
       }),
+  },
+
+  backups: {
+    list: (companyId: string) =>
+      request<CompanyBackupState>(`/api/companies/${encodeURIComponent(companyId)}/backups`),
+    setAutoMonthly: (companyId: string, autoMonthly: boolean) =>
+      request<CompanyBackupState>(`/api/companies/${encodeURIComponent(companyId)}/backups`, {
+        method: "PATCH",
+        body: JSON.stringify({ autoMonthly }),
+      }),
+    downloadManual: (companyId: string) =>
+      downloadApiFile(
+        `/api/companies/${encodeURIComponent(companyId)}/backup`,
+        "company-backup.json",
+      ),
+    downloadStored: (companyId: string, period: string) =>
+      downloadApiFile(
+        `/api/companies/${encodeURIComponent(companyId)}/backups/${encodeURIComponent(period)}`,
+        `backup-${period}.json`,
+      ),
   },
 
   parties: {
@@ -342,8 +435,66 @@ export const api = {
         method: "POST",
         body: JSON.stringify(body),
       }),
-    update: (id: string, body: Partial<ServiceCall>) =>
+    update: (
+      id: string,
+      body: Partial<ServiceCall> & {
+        action?:
+          | "complete_inspection"
+          | "skip_estimate"
+          | "finalize_estimate"
+          | "submit_for_qa"
+          | "qa_pass"
+          | "qa_fail"
+          | "close"
+          | "deduct_parts_stock";
+      },
+    ) =>
       request<{ serviceCall: ServiceCall }>(`/api/service-calls/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    toInvoice: (id: string) =>
+      request<{ serviceCall: ServiceCall; transactionId: string; alreadyInvoiced: boolean }>(
+        `/api/service-calls/${id}/to-invoice`,
+        { method: "POST", body: "{}" },
+      ),
+  },
+
+  notifications: {
+    list: (companyId: string, unreadOnly = false) => {
+      const q = new URLSearchParams({ companyId });
+      if (unreadOnly) q.set("unreadOnly", "1");
+      return request<{ notifications: AppNotification[] }>(`/api/notifications?${q}`);
+    },
+    markRead: (body: { companyId?: string; ids?: string[] } = {}) =>
+      request<{ ok: boolean }>("/api/notifications/mark-read", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+  },
+
+  serviceVisits: {
+    list: (companyId: string, serviceCallId: string) =>
+      request<{ visits: ServiceVisit[] }>(
+        `/api/service-visits?companyId=${encodeURIComponent(companyId)}&serviceCallId=${encodeURIComponent(serviceCallId)}`,
+      ),
+    create: (
+      body: Partial<ServiceVisit> & {
+        companyId: string;
+        serviceCallId: string;
+        visitDate: string;
+        markCallDone?: boolean;
+      },
+    ) =>
+      request<{ visit: ServiceVisit; serviceCall: ServiceCall }>("/api/service-visits", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    update: (
+      id: string,
+      body: Partial<ServiceVisit> & { markCallDone?: boolean },
+    ) =>
+      request<{ visit: ServiceVisit; serviceCall: ServiceCall }>(`/api/service-visits/${id}`, {
         method: "PATCH",
         body: JSON.stringify(body),
       }),

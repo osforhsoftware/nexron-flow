@@ -68,7 +68,7 @@ function toPayload(matrix: MatrixState): PermissionMap {
   return out;
 }
 
-export function RolesPage() {
+export function RolesPage({ embedded = false }: { embedded?: boolean }) {
   const { can } = useApp();
   const [q, setQ] = useState("");
   const [error, setError] = useState("");
@@ -207,33 +207,47 @@ export function RolesPage() {
   if (!can("roles", "read")) {
     return (
       <>
-        <header className="topbar">
-          <div>
-            <h1>Roles</h1>
+        {embedded ? (
+          <div className="generic-settings">
+            <h2>Roles & Permissions</h2>
             <p className="muted">You do not have permission to view roles.</p>
           </div>
-        </header>
+        ) : (
+          <header className="topbar">
+            <div>
+              <h1>Roles</h1>
+              <p className="muted">You do not have permission to view roles.</p>
+            </div>
+          </header>
+        )}
       </>
     );
   }
 
+  const heading = (
+    <div className={embedded ? "settings-people-head" : undefined}>
+      <div>
+        {embedded ? <h2>Roles & Permissions</h2> : <h1>Roles & Permissions</h1>}
+        <p className="muted">Define role matrices keyed by submodule directory</p>
+      </div>
+      {canCreate ? (
+        <button className="btn btn-primary" type="button" onClick={() => void openCreate()}>
+          <Plus size={14} /> Add Role
+        </button>
+      ) : null}
+    </div>
+  );
+
   return (
     <>
-      <header className="topbar">
-        <div>
-          <h1>Roles & Permissions</h1>
-          <p className="muted">Define role matrices keyed by submodule directory</p>
-        </div>
-        <div className="topbar-actions">
-          {canCreate ? (
-            <button className="btn btn-primary" type="button" onClick={() => void openCreate()}>
-              <Plus size={14} /> Add Role
-            </button>
-          ) : null}
-        </div>
-      </header>
+      {embedded ? null : (
+        <header className="topbar">
+          {heading}
+        </header>
+      )}
 
-      <div className="content">
+      <div className={embedded ? "generic-settings settings-people" : "content"}>
+        {embedded ? heading : null}
         {error && !editorOpen ? <p className="form-error">{error}</p> : null}
         <div className="filter-bar">
           <input

@@ -1,50 +1,3 @@
-import type { CompanyCountry } from "./companyLocale";
-
-export type LedgerMapKey =
-  | "sales"
-  | "purchase"
-  | "salesReturn"
-  | "purchaseReturn"
-  | "debtors"
-  | "creditors"
-  | "taxPayable"
-  | "taxReceivable"
-  | "discountAllowed"
-  | "discountReceived"
-  | "roundOff"
-  | "cash"
-  | "bank";
-
-export const LEDGER_FIELDS: { key: LedgerMapKey; label: string; hint: string }[] = [
-  { key: "sales", label: "Sales / Income", hint: "Credit for sale invoices" },
-  { key: "purchase", label: "Purchase / Expense", hint: "Debit for purchase bills" },
-  { key: "salesReturn", label: "Sales Return", hint: "Credit notes / sale returns" },
-  { key: "purchaseReturn", label: "Purchase Return", hint: "Debit notes / purchase returns" },
-  { key: "debtors", label: "Sundry Debtors", hint: "Party receivables" },
-  { key: "creditors", label: "Sundry Creditors", hint: "Party payables" },
-  { key: "taxPayable", label: "Output Tax Payable", hint: "GST/VAT collected on sales" },
-  { key: "taxReceivable", label: "Input Tax Receivable", hint: "GST/VAT paid on purchases" },
-  { key: "discountAllowed", label: "Discount Allowed", hint: "Discounts given to parties" },
-  { key: "discountReceived", label: "Discount Received", hint: "Discounts from suppliers" },
-  { key: "roundOff", label: "Round Off", hint: "Invoice rounding differences" },
-  { key: "cash", label: "Cash-in-Hand", hint: "Default cash ledger" },
-  { key: "bank", label: "Bank Accounts", hint: "Default bank ledger" },
-];
-
-export type FyPreset = "india" | "calendar" | "custom";
-
-export interface AccountingSettings {
-  fyPreset: FyPreset;
-  fyStartMonth: number;
-  fyStartDay: number;
-  bookBeginningDate: string;
-  lockOutsideFy: boolean;
-  preventBackdatedBeforeBooks: boolean;
-  ledgers: Record<LedgerMapKey, string>;
-  defaultCashAccountId: string;
-  defaultBankAccountId: string;
-}
-
 export interface TransactionSettings {
   invoicePrefix: string;
   estimatePrefix: string;
@@ -119,64 +72,9 @@ export interface CompanySettings {
   item: ItemSettings;
   print: PrintSettingsState;
   message: MessageSettingsState;
-  accounting: AccountingSettings;
 }
 
-export function emptyLedgers(): Record<LedgerMapKey, string> {
-  return {
-    sales: "",
-    purchase: "",
-    salesReturn: "",
-    purchaseReturn: "",
-    debtors: "",
-    creditors: "",
-    taxPayable: "",
-    taxReceivable: "",
-    discountAllowed: "",
-    discountReceived: "",
-    roundOff: "",
-    cash: "",
-    bank: "",
-  };
-}
-
-export function defaultLedgersForCountry(country: CompanyCountry): Record<LedgerMapKey, string> {
-  const tax = country === "IN" ? "GST" : "VAT";
-  return {
-    sales: "Sales Account",
-    purchase: "Purchase Account",
-    salesReturn: "Sales Return",
-    purchaseReturn: "Purchase Return",
-    debtors: "Sundry Debtors",
-    creditors: "Sundry Creditors",
-    taxPayable: `Output ${tax}`,
-    taxReceivable: `Input ${tax}`,
-    discountAllowed: "Discount Allowed",
-    discountReceived: "Discount Received",
-    roundOff: "Round Off",
-    cash: "Cash",
-    bank: "Bank",
-  };
-}
-
-export function defaultFyForCountry(country: CompanyCountry): Pick<AccountingSettings, "fyPreset" | "fyStartMonth" | "fyStartDay"> {
-  if (country === "IN") {
-    return { fyPreset: "india", fyStartMonth: 4, fyStartDay: 1 };
-  }
-  return { fyPreset: "calendar", fyStartMonth: 1, fyStartDay: 1 };
-}
-
-function currentBookDate(country: CompanyCountry): string {
-  const { fyStartMonth, fyStartDay } = defaultFyForCountry(country);
-  const now = new Date();
-  let year = now.getFullYear();
-  const startThisYear = new Date(year, fyStartMonth - 1, fyStartDay);
-  if (now < startThisYear) year -= 1;
-  return `${year}-${String(fyStartMonth).padStart(2, "0")}-${String(fyStartDay).padStart(2, "0")}`;
-}
-
-export function defaultCompanySettings(country: CompanyCountry = "AE"): CompanySettings {
-  const fy = defaultFyForCountry(country);
+export function defaultCompanySettings(): CompanySettings {
   return {
     transaction: {
       invoicePrefix: "INV-",
@@ -240,15 +138,6 @@ export function defaultCompanySettings(country: CompanyCountry = "AE"): CompanyS
       template:
         "Thanks for your purchase with us!!\nInvoice Amount: {amount}\nReceived: {received}\nBalance: {balance}",
     },
-    accounting: {
-      ...fy,
-      bookBeginningDate: currentBookDate(country),
-      lockOutsideFy: true,
-      preventBackdatedBeforeBooks: true,
-      ledgers: defaultLedgersForCountry(country),
-      defaultCashAccountId: "",
-      defaultBankAccountId: "",
-    },
   };
 }
 
@@ -268,11 +157,8 @@ function asString(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
 }
 
-export function mergeCompanySettings(
-  raw: unknown,
-  country: CompanyCountry = "AE",
-): CompanySettings {
-  const base = defaultCompanySettings(country);
+export function mergeCompanySettings(raw: unknown): CompanySettings {
+  const base = defaultCompanySettings();
   if (!isRecord(raw)) return base;
 
   const tx = isRecord(raw.transaction) ? raw.transaction : {};
@@ -281,24 +167,12 @@ export function mergeCompanySettings(
   const item = isRecord(raw.item) ? raw.item : {};
   const print = isRecord(raw.print) ? raw.print : {};
   const message = isRecord(raw.message) ? raw.message : {};
-  const accounting = isRecord(raw.accounting) ? raw.accounting : {};
-  const ledgersRaw = isRecord(accounting.ledgers) ? accounting.ledgers : {};
-  const ledgers = emptyLedgers();
-  for (const field of LEDGER_FIELDS) {
-    ledgers[field.key] = asString(ledgersRaw[field.key], base.accounting.ledgers[field.key]);
-  }
 
   const sellTypeRaw = asString(item.sellType, base.item.sellType);
   const sellType =
     sellTypeRaw === "product" || sellTypeRaw === "service" || sellTypeRaw === "product_service"
       ? sellTypeRaw
       : base.item.sellType;
-
-  const fyPresetRaw = asString(accounting.fyPreset, base.accounting.fyPreset);
-  const fyPreset: FyPreset =
-    fyPresetRaw === "india" || fyPresetRaw === "calendar" || fyPresetRaw === "custom"
-      ? fyPresetRaw
-      : base.accounting.fyPreset;
 
   const theme = asNumber(print.layoutTheme, base.print.layoutTheme);
   const layoutTheme = ([1, 2, 3, 4].includes(theme) ? theme : 1) as 1 | 2 | 3 | 4;
@@ -368,89 +242,7 @@ export function mergeCompanySettings(
       includePaymentLink: asBool(message.includePaymentLink, base.message.includePaymentLink),
       template: asString(message.template, base.message.template),
     },
-    accounting: {
-      fyPreset,
-      fyStartMonth: Math.max(1, Math.min(12, asNumber(accounting.fyStartMonth, base.accounting.fyStartMonth))),
-      fyStartDay: Math.max(1, Math.min(28, asNumber(accounting.fyStartDay, base.accounting.fyStartDay))),
-      bookBeginningDate: asString(accounting.bookBeginningDate, base.accounting.bookBeginningDate),
-      lockOutsideFy: asBool(accounting.lockOutsideFy, base.accounting.lockOutsideFy),
-      preventBackdatedBeforeBooks: asBool(
-        accounting.preventBackdatedBeforeBooks,
-        base.accounting.preventBackdatedBeforeBooks,
-      ),
-      ledgers,
-      defaultCashAccountId: asString(accounting.defaultCashAccountId, ""),
-      defaultBankAccountId: asString(accounting.defaultBankAccountId, ""),
-    },
   };
-}
-
-export function applyFyPreset(preset: FyPreset): Pick<AccountingSettings, "fyPreset" | "fyStartMonth" | "fyStartDay"> {
-  if (preset === "india") return { fyPreset: "india", fyStartMonth: 4, fyStartDay: 1 };
-  if (preset === "calendar") return { fyPreset: "calendar", fyStartMonth: 1, fyStartDay: 1 };
-  return { fyPreset: "custom", fyStartMonth: 4, fyStartDay: 1 };
-}
-
-export function financialYearRange(
-  refDate: string,
-  fyStartMonth: number,
-  fyStartDay: number,
-): { start: string; end: string; label: string } {
-  const d = new Date(`${refDate}T00:00:00`);
-  const year = Number.isNaN(d.getTime()) ? new Date().getFullYear() : d.getFullYear();
-  const month = Number.isNaN(d.getTime()) ? new Date().getMonth() + 1 : d.getMonth() + 1;
-  const day = Number.isNaN(d.getTime()) ? new Date().getDate() : d.getDate();
-
-  let startYear = year;
-  if (month < fyStartMonth || (month === fyStartMonth && day < fyStartDay)) {
-    startYear = year - 1;
-  }
-  const endYear = startYear + 1;
-  const start = `${startYear}-${String(fyStartMonth).padStart(2, "0")}-${String(fyStartDay).padStart(2, "0")}`;
-  const endDate = new Date(endYear, fyStartMonth - 1, fyStartDay);
-  endDate.setDate(endDate.getDate() - 1);
-  const end = `${endDate.getFullYear()}-${String(endDate.getMonth() + 1).padStart(2, "0")}-${String(endDate.getDate()).padStart(2, "0")}`;
-  const label =
-    fyStartMonth === 1 && fyStartDay === 1
-      ? `${startYear}`
-      : `${startYear}-${String(endYear).slice(-2)}`;
-  return { start, end, label };
-}
-
-export function validateAccountingSettings(accounting: AccountingSettings): string[] {
-  const errors: string[] = [];
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(accounting.bookBeginningDate)) {
-    startError(errors, "Book beginning date is required (YYYY-MM-DD).");
-  } else {
-    const parsed = new Date(`${accounting.bookBeginningDate}T00:00:00`);
-    if (Number.isNaN(parsed.getTime())) {
-      startError(errors, "Book beginning date is invalid.");
-    }
-  }
-  if (accounting.fyStartMonth < 1 || accounting.fyStartMonth > 12) {
-    startError(errors, "Financial year start month must be between 1 and 12.");
-  }
-  if (accounting.fyStartDay < 1 || accounting.fyStartDay > 28) {
-    startError(errors, "Financial year start day must be between 1 and 28.");
-  }
-  for (const field of LEDGER_FIELDS) {
-    const value = accounting.ledgers[field.key]?.trim() ?? "";
-    if (!value) {
-      startError(errors, `${field.label} ledger mapping is required.`);
-    } else if (value.length > 120) {
-      startError(errors, `${field.label} ledger name is too long.`);
-    }
-  }
-  const names = LEDGER_FIELDS.map((f) => accounting.ledgers[f.key].trim().toLowerCase()).filter(Boolean);
-  const unique = new Set(names);
-  if (unique.size < names.length) {
-    startError(errors, "Ledger mappings must use unique ledger names.");
-  }
-  return errors;
-}
-
-function startError(errors: string[], message: string) {
-  if (!errors.includes(message)) errors.push(message);
 }
 
 export function validateTransactionSettings(tx: TransactionSettings): string[] {

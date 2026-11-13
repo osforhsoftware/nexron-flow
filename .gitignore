@@ -19,6 +19,7 @@ dist-ssr
 
 # Local SQLite leftover; MySQL data stays on the machine
 backend/storage/*.db
+backend/storage/backups/
 backend.zip
 
 # Editor directories and files

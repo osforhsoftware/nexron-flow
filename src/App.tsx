@@ -3,7 +3,6 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AppLayout } from "./components/AppLayout";
 import { BrandLogo } from "./components/BrandLogo";
 import { useApp } from "./lib/AppContext";
-import { CompaniesPage } from "./pages/CompaniesPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { EquipmentPage } from "./pages/EquipmentPage";
 import { InvoicePage } from "./pages/InvoicePage";
@@ -12,7 +11,6 @@ import { LoginPage } from "./pages/LoginPage";
 import { PartiesPage } from "./pages/PartiesPage";
 import { PaymentsPage } from "./pages/PaymentsPage";
 import { ReportsPage } from "./pages/ReportsPage";
-import { RolesPage } from "./pages/RolesPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { BusinessToolsPage } from "./pages/BusinessToolsPage";
 import { PipelineDocsPage } from "./pages/PipelineDocsPage";
@@ -23,6 +21,8 @@ import { QuickOrderPage } from "./pages/QuickOrderPage";
 import { QrScannerPage } from "./pages/QrScannerPage";
 import { ScanPage } from "./pages/ScanPage";
 import { ServiceCallsPage } from "./pages/ServiceCallsPage";
+import { ServiceCallNewPage } from "./pages/ServiceCallNewPage";
+import { ServiceCallDetailPage } from "./pages/ServiceCallDetailPage";
 
 function Protected({ children }: { children: ReactNode }) {
   const { ready, session } = useApp();
@@ -64,6 +64,8 @@ export default function App() {
         <Route path="items/equipment" element={<EquipmentPage />} />
         <Route path="service" element={<Navigate to="/service/calls" replace />} />
         <Route path="service/calls" element={<ServiceCallsPage />} />
+        <Route path="service/calls/new" element={<ServiceCallNewPage />} />
+        <Route path="service/calls/:id" element={<ServiceCallDetailPage />} />
         <Route path="sales" element={<InvoicePage type="sale" />} />
         <Route path="sales/quick" element={<QuickOrderPage />} />
         <Route path="sales/quotations" element={<QuotationPage />} />
@@ -77,9 +79,9 @@ export default function App() {
         <Route path="purchases/bills" element={<InvoicePage type="purchase" />} />
         <Route path="payments" element={<PaymentsPage />} />
         <Route path="reports" element={<ReportsPage />} />
-        <Route path="companies" element={<CompaniesPage />} />
+        <Route path="companies" element={<Navigate to="/" replace />} />
         <Route path="settings" element={<SettingsPage />} />
-        <Route path="roles" element={<RolesPage />} />
+        <Route path="roles" element={<Navigate to="/settings?tab=roles" replace />} />
         <Route path="backup" element={<Navigate to="/utilities" replace />} />
         <Route path="utilities" element={<BusinessToolsPage />} />
       </Route>

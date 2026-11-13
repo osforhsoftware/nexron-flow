@@ -32,7 +32,7 @@ const PAGE_RESULTS: Array<Omit<SearchResult, "id"> & { id: string; route: string
   { id: "page-home", kind: "page", title: "Home", subtitle: "Dashboard", to: "/", route: "/", icon: Home },
   { id: "page-parties", kind: "page", title: "Parties", subtitle: "Customers & suppliers", to: "/parties", route: "/parties", icon: Users },
   { id: "page-products", kind: "page", title: "Products", subtitle: "Items", to: "/items/products", route: "/items/products", icon: Package },
-  { id: "page-services", kind: "page", title: "Services", subtitle: "Items", to: "/items/services", route: "/items/services", icon: Package },
+  { id: "page-services", kind: "page", title: "Services", subtitle: "Utilities", to: "/items/services", route: "/items/services", icon: Package },
   { id: "page-equipment", kind: "page", title: "Equipment", subtitle: "Items", to: "/items/equipment", route: "/items/equipment", icon: Wrench },
   { id: "page-service-calls", kind: "page", title: "Service Calls", subtitle: "Service", to: "/service/calls", route: "/service/calls", icon: Headphones },
   { id: "page-sales", kind: "page", title: "Sale Invoices", subtitle: "Sale", to: "/sales", route: "/sales", icon: ShoppingCart },
@@ -47,9 +47,11 @@ const PAGE_RESULTS: Array<Omit<SearchResult, "id"> & { id: string; route: string
   { id: "page-bills", kind: "page", title: "Purchase Bills", subtitle: "Purchase", to: "/purchases/bills", route: "/purchases/bills", icon: Store },
   { id: "page-payments", kind: "page", title: "Cash & Bank", subtitle: "Payments", to: "/payments", route: "/payments", icon: FileText },
   { id: "page-reports", kind: "page", title: "Reports", subtitle: "Analytics", to: "/reports", route: "/reports", icon: FileText },
-  { id: "page-roles", kind: "page", title: "Roles", subtitle: "Access", to: "/roles", route: "/roles", icon: Users },
+  { id: "page-roles", kind: "page", title: "Roles & Permissions", subtitle: "Settings", to: "/settings?tab=roles", route: "/settings", icon: Users },
+  { id: "page-users", kind: "page", title: "Users", subtitle: "Settings", to: "/settings?tab=users", route: "/settings", icon: Users },
+  { id: "page-staff", kind: "page", title: "Staff", subtitle: "Settings", to: "/settings?tab=staff", route: "/settings", icon: Users },
   { id: "page-utilities", kind: "page", title: "Utilities", subtitle: "Tools", to: "/utilities", route: "/utilities", icon: Wrench },
-  { id: "page-manual-backup", kind: "page", title: "Create Manual Backup", subtitle: "Utilities", to: "/utilities", route: "/utilities", icon: FileText },
+  { id: "page-manual-backup", kind: "page", title: "Backup", subtitle: "Monthly automatic or manual download", to: "/utilities?backup=1", route: "/utilities", icon: FileText },
   { id: "page-settings", kind: "page", title: "Settings", subtitle: "Business", to: "/settings", route: "/settings", icon: FileText },
 ];
 

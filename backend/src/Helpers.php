@@ -91,7 +91,8 @@ final class Helpers
     }
 
     /**
-     * Validate and normalize company settings payload (especially accounting).
+     * Validate and normalize company settings payload.
+     * Ledger mapping is not used by this app, so any stored accounting block is dropped.
      * @param mixed $raw
      * @return array{ok:bool,settings?:array<string,mixed>,error?:string}
      */
@@ -104,58 +105,7 @@ final class Helpers
             return ['ok' => false, 'error' => 'settings must be an object'];
         }
 
-        if (isset($raw['accounting']) && is_array($raw['accounting'])) {
-            $accounting = $raw['accounting'];
-            $bookDate = trim((string) ($accounting['bookBeginningDate'] ?? ''));
-            if ($bookDate === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $bookDate)) {
-                return ['ok' => false, 'error' => 'Book beginning date is required (YYYY-MM-DD)'];
-            }
-            $fyMonth = (int) ($accounting['fyStartMonth'] ?? 0);
-            $fyDay = (int) ($accounting['fyStartDay'] ?? 0);
-            if ($fyMonth < 1 || $fyMonth > 12) {
-                return ['ok' => false, 'error' => 'Financial year start month is invalid'];
-            }
-            if ($fyDay < 1 || $fyDay > 28) {
-                return ['ok' => false, 'error' => 'Financial year start day is invalid'];
-            }
-
-            $requiredLedgers = [
-                'sales' => 'Sales / Income',
-                'purchase' => 'Purchase / Expense',
-                'salesReturn' => 'Sales Return',
-                'purchaseReturn' => 'Purchase Return',
-                'debtors' => 'Sundry Debtors',
-                'creditors' => 'Sundry Creditors',
-                'taxPayable' => 'Output Tax Payable',
-                'taxReceivable' => 'Input Tax Receivable',
-                'discountAllowed' => 'Discount Allowed',
-                'discountReceived' => 'Discount Received',
-                'roundOff' => 'Round Off',
-                'cash' => 'Cash-in-Hand',
-                'bank' => 'Bank Accounts',
-            ];
-            $ledgers = is_array($accounting['ledgers'] ?? null) ? $accounting['ledgers'] : [];
-            $names = [];
-            foreach ($requiredLedgers as $key => $label) {
-                $value = trim((string) ($ledgers[$key] ?? ''));
-                if ($value === '') {
-                    return ['ok' => false, 'error' => $label . ' ledger mapping is required'];
-                }
-                if (strlen($value) > 120) {
-                    return ['ok' => false, 'error' => $label . ' ledger name is too long'];
-                }
-                $lower = strtolower($value);
-                if (isset($names[$lower])) {
-                    return ['ok' => false, 'error' => 'Ledger mappings must use unique ledger names'];
-                }
-                $names[$lower] = true;
-                $ledgers[$key] = $value;
-            }
-            $raw['accounting']['ledgers'] = $ledgers;
-            $raw['accounting']['bookBeginningDate'] = $bookDate;
-            $raw['accounting']['fyStartMonth'] = $fyMonth;
-            $raw['accounting']['fyStartDay'] = $fyDay;
-        }
+        unset($raw['accounting']);
 
         return ['ok' => true, 'settings' => $raw];
     }
@@ -297,8 +247,53 @@ final class Helpers
         return $prefix . (string) $next;
     }
 
+    /** @return list<mixed> */
+    public static function decodeJsonList($value): array
+    {
+        if ($value === null || $value === '') {
+            return [];
+        }
+        if (is_array($value)) {
+            return array_values($value);
+        }
+        $decoded = json_decode((string) $value, true);
+        return is_array($decoded) ? array_values($decoded) : [];
+    }
+
+    public static function encodeJsonList($value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+        if (!is_array($value)) {
+            return null;
+        }
+        $json = json_encode(array_values($value), JSON_UNESCAPED_UNICODE);
+        return $json === false ? null : $json;
+    }
+
+    /** Map legacy statuses onto the 6-stage pipeline. */
+    public static function normalizeServiceCallStatusValue($value): string
+    {
+        $allowed = ['open', 'inspection', 'estimate', 'in_progress', 'qa', 'billing', 'closed'];
+        $status = strtolower(trim((string) $value));
+        $status = str_replace([' ', '-'], '_', $status);
+        if ($status === 'inprogress') {
+            $status = 'in_progress';
+        }
+        // Legacy aliases
+        if ($status === 'assigned') {
+            $status = 'inspection';
+        }
+        if ($status === 'done' || $status === 'complete' || $status === 'completed') {
+            $status = 'billing';
+        }
+        return in_array($status, $allowed, true) ? $status : 'open';
+    }
+
     public static function serviceCallToApi(array $row): array
     {
+        $status = self::normalizeServiceCallStatusValue($row['status'] ?? 'open');
         return [
             'id' => $row['id'],
             'companyId' => $row['company_id'],
@@ -307,16 +302,96 @@ final class Helpers
             'customerName' => $row['customer_name'],
             'equipmentId' => ($row['equipment_id'] ?? null) ?: null,
             'equipmentName' => ($row['equipment_name'] ?? null) ?: null,
+            'equipmentIds' => self::decodeJsonList($row['equipment_ids_json'] ?? null),
             'type' => ($row['type'] ?? 'Repair') ?: 'Repair',
             'priority' => ($row['priority'] ?? 'normal') ?: 'normal',
-            'status' => ($row['status'] ?? 'open') ?: 'open',
+            'status' => $status,
             'description' => $row['description'] ?? '',
             'assignedUserId' => ($row['assigned_user_id'] ?? null) ?: null,
             'assignedName' => ($row['assigned_name'] ?? null) ?: null,
+            'inspectorId' => ($row['inspector_id'] ?? null) ?: null,
+            'inspectorName' => ($row['inspector_name'] ?? null) ?: null,
+            'inspectionDate' => ($row['inspection_date'] ?? null) ?: null,
+            'findings' => ($row['findings'] ?? null) ?: null,
+            'severity' => ($row['severity'] ?? null) ?: null,
+            'recommendation' => ($row['recommendation'] ?? null) ?: null,
+            'recommendationNotes' => ($row['recommendation_notes'] ?? null) ?: null,
+            'workRequired' => ($row['work_required'] ?? null) ?: null,
+            'workDetails' => ($row['work_details'] ?? null) ?: null,
+            'requestedParts' => ($row['requested_parts'] ?? null) ?: null,
+            'inspectorSignature' => ($row['inspector_signature'] ?? null) ?: null,
+            'inspectionPhotos' => self::decodeJsonList($row['inspection_photos_json'] ?? null),
+            'engineerUserId' => ($row['engineer_user_id'] ?? null) ?: null,
+            'engineerName' => ($row['engineer_name'] ?? null) ?: null,
+            'estimateLines' => self::decodeJsonList($row['estimate_lines_json'] ?? null),
+            'estimateDiscount' => (float) ($row['estimate_discount'] ?? 0),
+            'estimateNotes' => ($row['estimate_notes'] ?? null) ?: null,
+            'estimateFinalizedAt' => ($row['estimate_finalized_at'] ?? null) ?: null,
+            'partsUsed' => self::decodeJsonList($row['parts_used_json'] ?? null),
+            'servicePhotos' => self::decodeJsonList($row['service_photos_json'] ?? null),
+            'customerHandoff' => !empty($row['customer_handoff']),
+            'customerReceiverName' => ($row['customer_receiver_name'] ?? null) ?: null,
+            'customerSignature' => ($row['customer_signature'] ?? null) ?: null,
+            'qaDecision' => ($row['qa_decision'] ?? null) ?: null,
+            'qaRemarks' => ($row['qa_remarks'] ?? null) ?: null,
+            'qaVerifiedBy' => ($row['qa_verified_by'] ?? null) ?: null,
+            'qaVerifiedByName' => ($row['qa_verified_by_name'] ?? null) ?: null,
+            'qaVerifiedAt' => ($row['qa_verified_at'] ?? null) ?: null,
             'scheduledFor' => ($row['scheduled_for'] ?? null) ?: null,
             'notes' => ($row['notes'] ?? null) ?: null,
             'invoiceDocId' => ($row['invoice_doc_id'] ?? null) ?: null,
             'completedAt' => ($row['completed_at'] ?? null) ?: null,
+            'createdAt' => $row['created_at'],
+            'updatedAt' => $row['updated_at'] ?? null,
+        ];
+    }
+
+    public static function notificationToApi(array $row): array
+    {
+        return [
+            'id' => $row['id'],
+            'companyId' => $row['company_id'],
+            'userId' => $row['user_id'],
+            'title' => $row['title'],
+            'body' => ($row['body'] ?? null) ?: null,
+            'link' => ($row['link'] ?? null) ?: null,
+            'kind' => ($row['kind'] ?? null) ?: null,
+            'refId' => ($row['ref_id'] ?? null) ?: null,
+            'readAt' => ($row['read_at'] ?? null) ?: null,
+            'createdAt' => $row['created_at'],
+        ];
+    }
+
+    public static function nextServiceVisitNo(PDO $pdo, string $serviceCallId): string
+    {
+        $stmt = $pdo->prepare('SELECT visit_no FROM service_visits WHERE service_call_id = ?');
+        $stmt->execute([$serviceCallId]);
+        $next = 1;
+        foreach ($stmt->fetchAll() as $row) {
+            $tag = strtoupper(trim((string) $row['visit_no']));
+            if (preg_match('/^V-?(\d+)$/', $tag, $m)) {
+                $n = (int) $m[1];
+                if ($n >= $next) {
+                    $next = $n + 1;
+                }
+            }
+        }
+        return 'V-' . (string) $next;
+    }
+
+    public static function serviceVisitToApi(array $row): array
+    {
+        return [
+            'id' => $row['id'],
+            'companyId' => $row['company_id'],
+            'serviceCallId' => $row['service_call_id'],
+            'visitNo' => $row['visit_no'],
+            'visitDate' => $row['visit_date'],
+            'assignedUserId' => ($row['assigned_user_id'] ?? null) ?: null,
+            'assignedName' => ($row['assigned_name'] ?? null) ?: null,
+            'status' => ($row['status'] ?? 'planned') ?: 'planned',
+            'workDone' => ($row['work_done'] ?? null) ?: null,
+            'notes' => ($row['notes'] ?? null) ?: null,
             'createdAt' => $row['created_at'],
             'updatedAt' => $row['updated_at'] ?? null,
         ];
@@ -384,18 +459,6 @@ final class Helpers
             'createdAt' => $row['created_at'],
             'lineItems' => array_map([self::class, 'lineToApi'], $lines),
         ];
-    }
-
-    public static function decodeJsonList($value): array
-    {
-        if ($value === null || $value === '') {
-            return [];
-        }
-        if (is_array($value)) {
-            return $value;
-        }
-        $decoded = json_decode((string) $value, true);
-        return is_array($decoded) ? $decoded : [];
     }
 
     public static function encodeAdditionalFields($value): ?string
